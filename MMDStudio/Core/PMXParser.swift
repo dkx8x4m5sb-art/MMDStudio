@@ -159,7 +159,7 @@ final class PMXParser {
     func parse() throws -> PMXModel {
         try parseHeader()
         var vertices = try parseVertices()
-        let indices = try parseIndices(vertexCount: vertices.count)
+        var indices = try parseIndices(vertexCount: vertices.count)
         let textures = try parseTextures()
         var materials = try parseMaterials(textureCount: textures.count)
         var bones = try parseBones()
@@ -199,7 +199,7 @@ final class PMXParser {
                 warnings.append("PMX 物理段解析失败，已跳过刚体/关节：\(error.localizedDescription)")
             }
         }
-        try postProcess(vertices: &vertices, indices: indices, materials: &materials, bones: &bones, morphs: &morphs)
+        try postProcess(vertices: &vertices, indices: &indices, materials: &materials, bones: &bones, morphs: &morphs)
 
         var bounds = MMDBox.empty
         for vertex in vertices {
@@ -700,7 +700,7 @@ final class PMXParser {
         return result
     }
 
-    private func postProcess(vertices: inout [PMXVertex], indices: [UInt32],
+    private func postProcess(vertices: inout [PMXVertex], indices: inout [UInt32],
                              materials: inout [PMXMaterial], bones: inout [PMXBone],
                              morphs: inout [PMXMorph]) throws {
         let boneCount = bones.count
@@ -800,6 +800,19 @@ final class PMXParser {
             if morphs[index].isVertex {
                 morphs[index].vertexOffsets = morphs[index].vertexOffsets.filter { $0.vertexIndex < vertices.count }
             }
+        }
+
+        // Vertex indices were the only parsed index field left unchecked. The
+        // mesh builder dereferences them directly (model.vertices[i]) and one
+        // out-of-range value killed the whole app with EXC_BAD_ACCESS — which
+        // is why only complex, converted models died on open while simple props
+        // loaded fine. Drop the offending triangles and re-derive the material
+        // ranges so the surviving faces stay contiguous.
+        let droppedTriangles = MMDIndexSanitary.pruneOutOfRange(indices: &indices,
+                                                               vertexCount: vertices.count,
+                                                               materials: &materials)
+        if droppedTriangles > 0 {
+            warnings.append("丢弃 \(droppedTriangles) 个引用了越界顶点的三角形（顶点表只有 \(vertices.count) 个），其余面正常显示")
         }
 
         if bones.isEmpty {

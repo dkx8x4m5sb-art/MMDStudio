@@ -336,23 +336,26 @@ final class MMDVideoExporter: ObservableObject {
                 }
                 writer.startSession(atSourceTime: .zero)
 
-                var lastImage: UIImage?
                 for frame in 0..<frameCount {
                     if self.cancelled { break }
                     let semaphore = DispatchSemaphore(value: 0)
-                    renderer.captureFrame(frame: Float(frame) / Float(max(1, fps)) * document.frameRate,
-                                          width: width, height: height,
-                                          transparentBackground: transparentBackground) { image in
-                        lastImage = image
+                    var frameBytes: [UInt8]?
+                    var frameRowBytes = 0
+                    renderer.captureFrameRaw(frame: Float(frame) / Float(max(1, fps)) * document.frameRate,
+                                             width: width, height: height,
+                                             transparentBackground: transparentBackground) { bytes, rowBytes in
+                        frameBytes = bytes
+                        frameRowBytes = rowBytes
                         semaphore.signal()
                     }
                     semaphore.wait()
-                    if transparentBackground, frame < 3 {
-                        MMDLog.shared.info("Transparent frame \(frame) alpha coverage: \(String(format: "%.2f", Self.alphaCoverage(lastImage)))",
+                    if transparentBackground, frame < 3, let bytes = frameBytes {
+                        MMDLog.shared.info("Transparent frame \(frame) alpha coverage: \(String(format: "%.2f", Self.alphaCoverage(bytes, rowBytes: frameRowBytes)))",
                                            category: "Export")
                     }
-                    guard let image = lastImage,
-                          let buffer = Self.pixelBuffer(from: image, width: width, height: height,
+                    guard let bytes = frameBytes, frameRowBytes > 0,
+                          let buffer = Self.pixelBuffer(fromBGRA: bytes, rowBytes: frameRowBytes,
+                                                        width: width, height: height,
                                                         pool: frame == 0 ? nil : adaptor.pixelBufferPool) else {
                         throw MMDLoadError.invalidData("第 \(frame) 帧渲染失败")
                     }
@@ -415,61 +418,67 @@ final class MMDVideoExporter: ObservableObject {
         }
     }
 
-    private static func pixelBuffer(from image: UIImage, width: Int, height: Int,
+    /// Copies the rendered BGRA rows straight into a CVPixelBuffer.
+    ///
+    /// The previous implementation rebuilt a CGContext, cleared it and drew the
+    /// frame with `.copy`. That depended on Core Graphics compositing behaving
+    /// predictably against a recycled pool buffer, and it did not: the first
+    /// frame stayed underneath every later frame. A memcpy of the full buffer
+    /// cannot composite at all — whatever the pool hands back is overwritten
+    /// byte for byte, including any row padding.
+    private static func pixelBuffer(fromBGRA bytes: [UInt8], rowBytes: Int,
+                                    width: Int, height: Int,
                                     pool: CVPixelBufferPool?) -> CVPixelBuffer? {
-        guard let cgImage = image.cgImage else { return nil }
+        guard rowBytes >= width * 4, bytes.count >= rowBytes * height else { return nil }
         var buffer: CVPixelBuffer?
         if let pool {
             CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
         }
         if buffer == nil {
             CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA,
-                                [kCVPixelBufferCGImageCompatibilityKey: true,
-                                 kCVPixelBufferCGBitmapContextCompatibilityKey: true] as CFDictionary,
+                                [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary,
                                 &buffer)
         }
         guard let pixelBuffer = buffer else { return nil }
         CVPixelBufferLockBaseAddress(pixelBuffer, [])
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
         guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
-        // Wipe the whole allocation, alpha included, before compositing.
-        memset(base, 0, CVPixelBufferGetBytesPerRow(pixelBuffer) * height)
-        guard let context = CGContext(data: base, width: width, height: height,
-                                      bitsPerComponent: 8, bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue |
-                                                  CGBitmapInfo.byteOrder32Little.rawValue) else { return nil }
-        // Transparent frames are composited over whatever the pool buffer
-        // already contained. Without clearing, the previous frame's opaque
-        // pixels survived under the new frame's semi-transparent ones, which is
-        // exactly the "old frames stack below the new frame" artifact. Clear
-        // and draw with .copy so every frame fully replaces the buffer.
-        context.setBlendMode(.copy)
-        context.clear(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
-        // The offscreen Metal texture and CGImage both use a top-down row
-        // order. Drawing into a CGBitmapContext without a vertical flip keeps
-        // that orientation; adding translate/scale here produced the
-        // upside-down MP4.
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let destinationRowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        // Clear first so the alignment padding rows hold nothing from an
+        // earlier export even if the pool sized this buffer differently.
+        memset(base, 0, destinationRowBytes * height)
+        bytes.withUnsafeBytes { raw in
+            guard let source = raw.baseAddress else { return }
+            if destinationRowBytes == rowBytes {
+                memcpy(base, source, rowBytes * height)
+            } else {
+                for row in 0..<height {
+                    memcpy(base + row * destinationRowBytes,
+                           source + row * rowBytes,
+                           min(rowBytes, destinationRowBytes))
+                }
+            }
+        }
         return pixelBuffer
     }
 
-    private static func alphaCoverage(_ image: UIImage?) -> Double {
-        guard let cgImage = image?.cgImage else { return 0 }
-        let width = 16
-        let height = 16
-        var pixels = [UInt8](repeating: 0, count: width * height * 4)
-        guard let context = CGContext(data: &pixels, width: width, height: height,
-                                      bitsPerComponent: 8, bytesPerRow: width * 4,
-                                      space: CGColorSpaceCreateDeviceRGB(),
-                                      bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue |
-                                                  CGBitmapInfo.byteOrder32Little.rawValue) else { return 0 }
-        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+    /// Samples the alpha byte of the rendered BGRA rows. Used only for the
+    /// first few frames of a transparent export so a regression shows up in the
+    /// log instead of in the delivered file.
+    private static func alphaCoverage(_ bytes: [UInt8], rowBytes: Int) -> Double {
+        guard rowBytes > 4, bytes.count > rowBytes else { return 0 }
+        let rows = bytes.count / rowBytes
         var opaque = 0
-        for index in stride(from: 0, to: pixels.count, by: 4) where pixels[index + 3] > 8 {
-            opaque += 1
+        var sampled = 0
+        for row in stride(from: 0, to: rows, by: max(1, rows / 32)) {
+            var column = 3
+            while column < rowBytes {
+                if bytes[row * rowBytes + column] > 8 { opaque += 1 }
+                sampled += 1
+                column += 64
+            }
         }
-        return Double(opaque) / Double(width * height)
+        return sampled > 0 ? Double(opaque) / Double(sampled) : 0
     }
 
     private static func mux(video: URL, audio: URL, output: URL,

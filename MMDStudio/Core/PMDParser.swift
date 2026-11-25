@@ -114,8 +114,8 @@ final class PMDParser {
         let rawComment = readFixedString(256, "模型注释")
 
         var vertices = try parseVertices()
-        let indices = try parseIndices(vertexCount: vertices.count)
-        let materials = try parseMaterialsAndTextures()
+        var indices = try parseIndices(vertexCount: vertices.count)
+        var materials = try parseMaterialsAndTextures()
         let textures = materialTextures
         var bones = try parseBones()
         let iks = try parseIK()
@@ -143,6 +143,12 @@ final class PMDParser {
             ikBones.insert(ik.bone)
         }
 
+        let droppedTriangles = MMDIndexSanitary.pruneOutOfRange(indices: &indices,
+                                                               vertexCount: vertices.count,
+                                                               materials: &materials)
+        if droppedTriangles > 0 {
+            warnings.append("丢弃 \(droppedTriangles) 个引用了越界顶点的三角形（顶点表只有 \(vertices.count) 个）")
+        }
         normalize(vertices: &vertices, materials: materials, bones: bones)
         var bounds = MMDBox.empty
         for vertex in vertices { bounds.expand(with: vertex.position) }

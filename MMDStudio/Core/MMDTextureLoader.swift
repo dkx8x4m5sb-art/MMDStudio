@@ -359,9 +359,29 @@ final class MMDTextureLibrary {
         return nil
     }
 
+    /// Longest edge allowed for an uploaded texture. A 4K RGBA sheet costs
+    /// 64 MB the moment it is decoded, plus a third again for mipmaps, and a
+    /// character package routinely ships a dozen of them — that is what pushed
+    /// heavy models into a jetsam kill on first draw. MMD artwork is painted
+    /// for 1024, so 2048 keeps the visual result identical at a quarter of the
+    /// memory.
+    static let maximumTextureEdge = 2048
+
     static func decodeWithImageIO(_ data: Data) -> DecodedImage? {
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        // Decoding straight to full size allocates the whole bitmap before we
+        // ever get a chance to shrink it; asking ImageIO for a capped thumbnail
+        // keeps the peak allocation bounded.
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumTextureEdge,
+            kCGImageSourceShouldCacheImmediately: true
+        ]
+        if let thumbnail = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) {
+            return decodeCGImage(thumbnail)
+        }
+        guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
         return decodeCGImage(image)
     }
 

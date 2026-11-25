@@ -33,10 +33,25 @@ struct ModelScreen: View {
         }
         .navigationTitle(entry.displayName)
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(false)
+        // The canvas reads a horizontal one-finger drag as an orbit, so a drag
+        // that began near the left edge used to be claimed by the navigation
+        // stack and popped the screen mid-rotation. Exiting is now the back
+        // button only.
+        .background(SwipeBackDisabler().frame(width: 0, height: 0))
         .task {
             guard document == nil, loadError == nil else { return }
+            let entry = self.entry
+            let store = self.store
             do {
-                document = try store.open(entry)
+                // A 40k-vertex PMX plus its accessory set takes seconds to
+                // parse. Doing that on the main thread blocked the UI long
+                // enough for the watchdog to kill the app, which read as a
+                // crash on "complex" models only.
+                let loaded = try await Task.detached(priority: .userInitiated) {
+                    try store.open(entry)
+                }.value
+                document = loaded
             } catch {
                 loadError = error.localizedDescription
             }
@@ -161,38 +176,50 @@ struct ModelViewerView: View {
         }
         .sheet(isPresented: $showMaterials) {
             MaterialInspectorView(document: document)
-                .presentationDetents([.fraction(0.45), .large])
+                .presentationDetents([.fraction(0.35), .large])
+                .presentationBackground(.ultraThinMaterial)
+                .presentationCornerRadius(22)
                 .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.45)))
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
         }
         .sheet(isPresented: $showTextures) {
             TextureExportView(document: document)
-                .presentationDetents([.fraction(0.45), .large])
+                .presentationDetents([.fraction(0.35), .large])
+                .presentationBackground(.ultraThinMaterial)
+                .presentationCornerRadius(22)
                 .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.45)))
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
         }
         .sheet(isPresented: $showMorphs) {
             MorphInspectorView(document: document)
-                .presentationDetents([.fraction(0.45), .large])
+                .presentationDetents([.fraction(0.35), .large])
+                .presentationBackground(.ultraThinMaterial)
+                .presentationCornerRadius(22)
                 .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.45)))
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
         }
         .sheet(isPresented: $showBones) {
             BoneInspectorView(document: document)
-                .presentationDetents([.fraction(0.45), .large])
+                .presentationDetents([.fraction(0.35), .large])
+                .presentationBackground(.ultraThinMaterial)
+                .presentationCornerRadius(22)
                 .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.45)))
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
         }
         .sheet(isPresented: $showLights) {
             NavigationStack { LightingInspectorView(document: document) }
-                .presentationDetents([.fraction(0.45), .large])
+                .presentationDetents([.fraction(0.35), .large])
+                .presentationBackground(.ultraThinMaterial)
+                .presentationCornerRadius(22)
                 .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.45)))
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
         }
         .sheet(isPresented: $showCamera) {
             CameraStudioView(document: document)
-                .presentationDetents([.fraction(0.5), .large])
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.5)))
+                .presentationDetents([.fraction(0.4), .large])
+                .presentationBackground(.ultraThinMaterial)
+                .presentationCornerRadius(22)
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.4)))
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showRenderStudio) {
@@ -202,15 +229,19 @@ struct ModelViewerView: View {
         }
         .sheet(isPresented: $showSceneEditor) {
             SceneEditorView(document: document)
-                .presentationDetents([.fraction(0.45), .large])
+                .presentationDetents([.fraction(0.35), .large])
+                .presentationBackground(.ultraThinMaterial)
+                .presentationCornerRadius(22)
                 .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.45)))
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
         }
         .sheet(isPresented: $showSettings) {
             SettingsInspectorView(document: document)
-                .presentationDetents([.fraction(0.45), .large])
+                .presentationDetents([.fraction(0.35), .large])
+                .presentationBackground(.ultraThinMaterial)
+                .presentationCornerRadius(22)
                 .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.45)))
+                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
         }
         .sheet(isPresented: $showExportStudio) {
             ExportStudioView(document: document)
@@ -782,5 +813,37 @@ private struct TextureExportView: View {
                 }
             }
         }
+    }
+}
+
+
+/// Blocks the navigation stack's interactive pop gesture while it is on screen.
+/// The gesture is resolved by UINavigationController, not SwiftUI, so it has to
+/// be switched off once this controller is actually inside the hierarchy.
+private struct SwipeBackDisabler: UIViewControllerRepresentable {
+
+    func makeUIViewController(context: Context) -> SwipeBackBlocker {
+        SwipeBackBlocker()
+    }
+
+    func updateUIViewController(_ controller: SwipeBackBlocker, context: Context) {
+        controller.disablePopGesture()
+    }
+}
+
+final class SwipeBackBlocker: UIViewController {
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        disablePopGesture()
+    }
+
+    override func didMove(toParent parent: UIViewController?) {
+        super.didMove(toParent: parent)
+        disablePopGesture()
+    }
+
+    func disablePopGesture() {
+        navigationController?.interactivePopGestureRecognizer?.isEnabled = false
     }
 }

@@ -162,3 +162,51 @@ enum MMDLoadError: LocalizedError {
         }
     }
 }
+
+/// Shared geometry hygiene for every loader. PMX and PMD both hand the mesh
+/// builder a flat triangle list that is indexed straight into the vertex array,
+/// and neither format guarantees the indices are in range — converted or merged
+/// models regularly contain a handful of stale values. Dropping the affected
+/// triangles keeps the model openable and leaves every material's index range
+/// contiguous, which the renderer relies on.
+enum MMDIndexSanitary {
+
+    @discardableResult
+    static func pruneOutOfRange(indices: inout [UInt32], vertexCount: Int,
+                                materials: inout [PMXMaterial]) -> Int {
+        guard vertexCount > 0, !indices.isEmpty else { return 0 }
+
+        var sanitized = [UInt32]()
+        sanitized.reserveCapacity(indices.count)
+        var droppedTriangles = 0
+        var cursor = 0
+
+        for materialIndex in materials.indices {
+            let start = min(indices.count, cursor)
+            let end = min(indices.count, max(start, start + max(0, materials[materialIndex].indexCount)))
+            var kept = 0
+            var triangle = start
+            while triangle + 2 < end {
+                let a = Int(indices[triangle])
+                let b = Int(indices[triangle + 1])
+                let c = Int(indices[triangle + 2])
+                if a < vertexCount, b < vertexCount, c < vertexCount {
+                    sanitized.append(indices[triangle])
+                    sanitized.append(indices[triangle + 1])
+                    sanitized.append(indices[triangle + 2])
+                    kept += 3
+                } else {
+                    droppedTriangles += 1
+                }
+                triangle += 3
+            }
+            materials[materialIndex].indexCount = kept
+            cursor = end
+        }
+
+        if sanitized.count != indices.count {
+            indices = sanitized
+        }
+        return droppedTriangles
+    }
+}

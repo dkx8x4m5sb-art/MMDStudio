@@ -106,6 +106,10 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         let depth: MTLTexture
     }
     private var cachedCaptureTargets: CaptureTargets?
+    /// Reused readback buffer. Allocating a fresh 4K RGBA array per exported
+    /// frame cost 33 MB of churn and was the main source of memory pressure
+    /// during long exports.
+    private var captureBytesScratch = [UInt8]()
     private var appliedQuality: MMDQualityMode?
     private var lastQualityCheck = CACurrentMediaTime()
     private var lastAdaptiveChange = CACurrentMediaTime()
@@ -341,6 +345,24 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         if Thread.isMainThread { work() } else { DispatchQueue.main.sync(execute: work) }
     }
 
+    /// Frame capture for the video exporter: hands back tightly packed BGRA
+    /// rows instead of a UIImage, so the writer can memcpy the whole buffer and
+    /// fully overwrite whatever the pixel-buffer pool recycled.
+    func captureFrameRaw(frame: Float, width: Int, height: Int,
+                         transparentBackground: Bool? = nil,
+                         completion: @escaping ([UInt8]?, Int) -> Void) {
+        let work: () -> Void = { [weak self] in
+            guard let self, let document = self.document else { completion(nil, 0); return }
+            document.currentFrame = max(0, min(document.duration, frame))
+            self.captureStill(width: width, height: height,
+                              transparentOverride: transparentBackground,
+                              preferMSAA: false,
+                              completion: { _ in },
+                              bytesOut: { bytes, rowBytes in completion(bytes, rowBytes) })
+        }
+        if Thread.isMainThread { work() } else { DispatchQueue.main.sync(execute: work) }
+    }
+
     func restoreFrame(_ frame: Float) {
         DispatchQueue.main.async { [weak self] in
             guard let self, let document = self.document else { return }
@@ -373,7 +395,8 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
     private func captureStill(width requestedWidth: Int, height requestedHeight: Int,
                               transparentOverride: Bool? = nil,
                               preferMSAA: Bool = true,
-                              completion: @escaping (UIImage?) -> Void) {
+                              completion: @escaping (UIImage?) -> Void,
+                              bytesOut: (([UInt8], Int) -> Void)? = nil) {
         reloadIfNeeded()
         guard let document, let mesh, let skeleton, let textures else {
             completion(nil)
@@ -724,14 +747,27 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         commandBuffer.waitUntilCompleted()
 
         let rowBytes = width * 4
-        var bytes = [UInt8](repeating: 0, count: rowBytes * height)
-        bytes.withUnsafeMutableBytes { raw in
-            resolveTexture.getBytes(raw.baseAddress!,
+        if captureBytesScratch.count != rowBytes * height {
+            captureBytesScratch = [UInt8](repeating: 0, count: rowBytes * height)
+        }
+        captureBytesScratch.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            resolveTexture.getBytes(base,
                                     bytesPerRow: rowBytes,
                                     from: MTLRegionMake2D(0, 0, width, height),
                                     mipmapLevel: 0)
         }
-        let data = Data(bytes)
+        // Export wants the raw BGRA rows so it can copy them straight into a
+        // CVPixelBuffer. Skipping the CGImage round trip removes a full copy
+        // per frame and, more importantly, removes Core Graphics compositing
+        // from the path that used to leave the first frame under every later
+        // frame.
+        if let bytesOut {
+            bytesOut(captureBytesScratch, rowBytes)
+            completion(nil)
+            return
+        }
+        let data = Data(captureBytesScratch)
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue | CGImageAlphaInfo.premultipliedFirst.rawValue
         guard let provider = CGDataProvider(data: data as CFData),

@@ -245,7 +245,16 @@ final class MMDStore: ObservableObject {
         if entry.role == .character && autoAttachPackageModels {
             var imported = 0
             for candidate in findAllPMX(in: entry.packageURL) where candidate.path != pmxURL.path {
-                guard imported < 8, Self.shouldAutoAttach(candidate, relativeTo: model) else { continue }
+                // Three accessories is enough for a normal package, and each one
+                // is a full PMX parse plus its own vertex/bone arrays. Eight of
+                // them on a heavy character tipped the load over the memory
+                // budget before a single frame was drawn.
+                guard imported < 3, Self.shouldAutoAttach(candidate, relativeTo: model) else { continue }
+                let size = (try? candidate.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                guard size < 12 * 1024 * 1024 else {
+                    MMDLog.shared.info("Skipped oversized accessory: \(candidate.lastPathComponent) (\(size / 1024 / 1024) MB)", category: "Scene")
+                    continue
+                }
                 do {
                     let id = try document.addAttachment(url: candidate, autoBind: true)
                     document.updateAttachment(id: id) { $0.fallbackRoot = entry.packageURL }
