@@ -280,14 +280,25 @@ final class MMDVideoExporter: ObservableObject {
         queue.async { [weak self] in
             guard let self else { return }
             let originalFrame = document.currentFrame
+            // Never render frame 0 into a texture that still holds the last
+            // export's final frame.
+            renderer.resetCaptureTargets()
             do {
                 try FileManager.default.removeItemIfExists(tempURL)
                 let writer = try AVAssetWriter(outputURL: tempURL,
                                                fileType: transparentBackground ? .mov : .mp4)
                 let targetMbps = Self.resolvedBitrate(width: width, height: height, fps: fps,
                                                       quality: quality, requested: bitrateMbps)
-                let bitrate = Int(targetMbps * 1_000_000)
-                let keyframeSeconds = max(1, min(10, keyframeInterval))
+                // HEVC with alpha spends most of its bit budget on the colour
+                // plane and starves the alpha plane, which is what leaves the
+                // first frame's silhouette hanging over the following ones.
+                // Give transparent exports extra bitrate, keep the GOP at one
+                // second so the alpha plane is refreshed often, and turn off
+                // frame reordering so frame 0 cannot be held as a reference.
+                let bitrate = Int(targetMbps * (transparentBackground ? 1.8 : 1.0) * 1_000_000)
+                let keyframeSeconds = transparentBackground
+                    ? 1
+                    : max(1, min(10, keyframeInterval))
                 let settings: [String: Any]
                 if transparentBackground {
                     // HEVC with alpha is the only Apple encoder that survives
@@ -300,7 +311,7 @@ final class MMDVideoExporter: ObservableObject {
                             AVVideoAverageBitRateKey: bitrate,
                             AVVideoMaxKeyFrameIntervalKey: keyframeSeconds * fps,
                             AVVideoExpectedSourceFrameRateKey: fps,
-                            AVVideoAllowFrameReorderingKey: true
+                            AVVideoAllowFrameReorderingKey: false
                         ]
                     ]
                 } else {
@@ -349,6 +360,20 @@ final class MMDVideoExporter: ObservableObject {
                         semaphore.signal()
                     }
                     semaphore.wait()
+                    if transparentBackground, frame == 0 || frame == frameCount / 3,
+                       let bytes = frameBytes {
+                        // Dumping the raw render lets us tell a compositing
+                        // problem from an encoder problem: if these PNGs are
+                        // clean but the .mov still shows frame 0 underneath
+                        // everything, the ghost is produced by the HEVC alpha
+                        // encoder, not by the renderer.
+                        let probeURL = videoDirectory.appendingPathComponent(
+                            "\(safeName)-\(stamp)-probe\(String(format: "%03d", frame)).png")
+                        Self.writeFrameProbe(bytes, rowBytes: frameRowBytes,
+                                             width: width, height: height, to: probeURL)
+                        MMDLog.shared.info("Transparent probe frame \(frame): \(probeURL.path)",
+                                           category: "Export")
+                    }
                     if transparentBackground, frame < 3, let bytes = frameBytes {
                         MMDLog.shared.info("Transparent frame \(frame) alpha coverage: \(String(format: "%.2f", Self.alphaCoverage(bytes, rowBytes: frameRowBytes)))",
                                            category: "Export")
@@ -460,6 +485,26 @@ final class MMDVideoExporter: ObservableObject {
             }
         }
         return pixelBuffer
+    }
+
+    /// Writes one raw rendered frame to PNG so a transparent export can be
+    /// diagnosed against the encoder output.
+    private static func writeFrameProbe(_ bytes: [UInt8], rowBytes: Int,
+                                        width: Int, height: Int, to url: URL) {
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        let bitmapInfo = CGBitmapInfo.byteOrder32Little.rawValue
+            | CGImageAlphaInfo.premultipliedFirst.rawValue
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+              let image = CGImage(width: width, height: height,
+                                  bitsPerComponent: 8, bitsPerPixel: 32,
+                                  bytesPerRow: rowBytes, space: colorSpace,
+                                  bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
+                                  provider: provider, decode: nil,
+                                  shouldInterpolate: false, intent: .defaultIntent),
+              let destination = CGImageDestinationCreateWithURL(
+                url as CFURL, UTType.png.identifier as CFString, 1, nil) else { return }
+        CGImageDestinationAddImage(destination, image, nil)
+        CGImageDestinationFinalize(destination)
     }
 
     /// Samples the alpha byte of the rendered BGRA rows. Used only for the

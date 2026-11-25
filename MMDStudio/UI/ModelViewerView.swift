@@ -6,6 +6,7 @@ struct ModelScreen: View {
 
     let entry: MMDModelEntry
     @EnvironmentObject private var store: MMDStore
+    @Environment(\.dismiss) private var dismiss
     @State private var document: MMDModelDocument?
     @State private var loadError: String?
 
@@ -33,12 +34,22 @@ struct ModelScreen: View {
         }
         .navigationTitle(entry.displayName)
         .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(false)
-        // The canvas reads a horizontal one-finger drag as an orbit, so a drag
-        // that began near the left edge used to be claimed by the navigation
-        // stack and popped the screen mid-rotation. Exiting is now the back
-        // button only.
-        .background(SwipeBackDisabler().frame(width: 0, height: 0))
+        // This screen is presented in a full-screen cover, which has no
+        // interactive pop gesture at all. Exiting therefore has exactly one
+        // route: this button. Disabling the UINavigationController gesture from
+        // a representable did not hold — SwiftUI re-enabled it after each
+        // appearance, which is why an orbit drag from the left edge still
+        // dismissed the canvas.
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.body.weight(.semibold))
+                }
+                .accessibilityLabel("返回模型库")
+            }
+        }
         .task {
             guard document == nil, loadError == nil else { return }
             let entry = self.entry
@@ -813,37 +824,5 @@ private struct TextureExportView: View {
                 }
             }
         }
-    }
-}
-
-
-/// Blocks the navigation stack's interactive pop gesture while it is on screen.
-/// The gesture is resolved by UINavigationController, not SwiftUI, so it has to
-/// be switched off once this controller is actually inside the hierarchy.
-private struct SwipeBackDisabler: UIViewControllerRepresentable {
-
-    func makeUIViewController(context: Context) -> SwipeBackBlocker {
-        SwipeBackBlocker()
-    }
-
-    func updateUIViewController(_ controller: SwipeBackBlocker, context: Context) {
-        controller.disablePopGesture()
-    }
-}
-
-final class SwipeBackBlocker: UIViewController {
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        disablePopGesture()
-    }
-
-    override func didMove(toParent parent: UIViewController?) {
-        super.didMove(toParent: parent)
-        disablePopGesture()
-    }
-
-    func disablePopGesture() {
-        navigationController?.interactivePopGestureRecognizer?.isEnabled = false
     }
 }

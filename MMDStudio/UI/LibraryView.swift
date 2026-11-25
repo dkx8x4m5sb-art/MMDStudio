@@ -17,6 +17,12 @@ struct LibraryView: View {
     @State private var fileManagerEntry: MMDModelEntry?
     @State private var pendingDelete: [MMDModelEntry] = []
     @State private var showLogs = false
+    /// Presented as a full-screen cover instead of a navigation push: the
+    /// canvas claims one-finger horizontal drags for orbiting, and a drag that
+    /// started at the left edge was being consumed by the navigation stack's
+    /// interactive pop, throwing the user back to the list mid-rotation. A
+    /// cover has no pop gesture at all, so the only way out is the button.
+    @State private var openedEntry: MMDModelEntry?
 
     private var selectedEntries: [MMDModelEntry] {
         store.entries.filter { selectedIDs.contains($0.id) }
@@ -152,6 +158,11 @@ struct LibraryView: View {
             .sheet(isPresented: $showLogs) {
                 LogViewer()
             }
+            .fullScreenCover(item: $openedEntry) { entry in
+                NavigationStack {
+                    ModelScreen(entry: entry).environmentObject(store)
+                }
+            }
             .alert("创建模型文件夹", isPresented: $showGroupCreator) {
                 TextField("文件夹名称", text: $newGroupName)
                 Button("创建") { store.createGroup(name: newGroupName) }
@@ -217,7 +228,8 @@ struct LibraryView: View {
             Button { toggleSelection(entry) } label: { row }
                 .buttonStyle(.plain)
         } else {
-            NavigationLink { ModelScreen(entry: entry).environmentObject(store) } label: { row }
+            Button { openedEntry = entry } label: { row }
+                .buttonStyle(.plain)
                 .contextMenu {
                     Button("查看 / 编辑包内文件") { fileManagerEntry = entry }
                     Button("重命名 PMX") {

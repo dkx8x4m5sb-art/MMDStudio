@@ -236,3 +236,18 @@ v11.1：
   退出。现在只能用导航栏返回按钮退出。
 - **交互：调参时保持模型可见。** 检查器面板改为半透明材质浮层，高度压到 35%（相机 40%），
   且半高状态下画布仍可旋转缩放，可以边看模型边推数值。
+
+## v12.2
+
+- **修复：打开带表情（morph）的模型必崩。** v12.1 在重载时只重建了 `resolvedWeightsScratch`，
+  漏了与之配对的 `groupAdditionsScratch`，两者长度不一致后组变形传播按新长度索引旧数组，
+  触发 Swift 越界陷阱（`EXC_BREAKPOINT`，崩在 `draw → reloadIfNeeded → refreshMorphPositions`）。
+  没有 morph 的小物件走不到这段，所以只有角色模型崩。现在两个缓冲区始终成对重建。
+- **修复：画布左滑退出。** 上一版用 `UIViewControllerRepresentable` 关掉
+  `interactivePopGestureRecognizer`，SwiftUI 在每次 appearance 后又把它打开，所以左缘拖动照旧退出。
+  画布改为 `fullScreenCover` 呈现，本身不存在 pop 手势，退出只有左上角返回按钮。
+- **透明视频首帧残影。** 导出开始时丢弃上次的离屏渲染目标；透明输出关闭 B 帧重排序、
+  关键帧间隔压到 1 秒、码率 ×1.8（HEVC 的 alpha 平面此前被严重欠码）。
+  同时在导出目录写出第 0 帧与 1/3 处的原始渲染 PNG（`*-probeXXX.png`），
+  用来区分"渲染就带残影"和"编码器产生残影"。
+- CI 增加 dSYM 与去符号化符号表产物，崩溃偏移可直接定位到函数。

@@ -246,7 +246,14 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             self.skeleton = MMDSkeleton(model: model)
             basePositions = model.vertices.map { $0.position }
             morphedPositions = basePositions
-            resolvedWeightsScratch = [Float](repeating: 0, count: model.morphs.count)
+            // These two buffers are only ever rebuilt as a pair inside
+            // refreshMorphPositions. Pre-sizing just one of them here left
+            // `groupAdditionsScratch` at the previous model's length, and the
+            // group-morph propagation then indexed past its end — a hard Swift
+            // trap inside draw(). That is what killed the app on any model
+            // carrying morphs, while simple props (no morphs) loaded fine.
+            resolvedWeightsScratch = []
+            groupAdditionsScratch = []
             baseDirectory = document.baseDirectory
             fallbackRoot = document.fallbackRoot
             loadedRevision = document.modelRevision
@@ -390,6 +397,13 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         photoRestoreScale = nil
         renderScale = previous
         onRenderScaleChange?(previous)
+    }
+
+    /// Drops the cached off-screen render targets. Called when an export
+    /// starts so the first frame is never rendered into a texture that still
+    /// holds the tail of the previous export.
+    func resetCaptureTargets() {
+        cachedCaptureTargets = nil
     }
 
     private func captureStill(width requestedWidth: Int, height requestedHeight: Int,
@@ -994,7 +1008,8 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         // Propagate group morphs exactly like MMDMorphController.resolvedWeights,
         // but into reusable buffers so an expression slider does not allocate a
         // new Float array per pass.
-        if resolvedWeightsScratch.count != model.morphs.count {
+        if resolvedWeightsScratch.count != model.morphs.count
+            || groupAdditionsScratch.count != model.morphs.count {
             resolvedWeightsScratch = [Float](repeating: 0, count: model.morphs.count)
             groupAdditionsScratch = [Float](repeating: 0, count: model.morphs.count)
         }
