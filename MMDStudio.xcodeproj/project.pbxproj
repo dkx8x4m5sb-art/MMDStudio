@@ -1,0 +1,452 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AA0000000000000000000055 /* bcdec.c in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000054 /* bcdec.c */; };
+		AA0000000000000000000048 /* MMDLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000047 /* MMDLog.swift */; };
+		AA000000000000000000004A /* DDSDecoder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000049 /* DDSDecoder.swift */; };
+		AA000000000000000000004C /* MMDScreenRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000004B /* MMDScreenRecorder.swift */; };
+		AA0000000000000000000050 /* LogViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000004F /* LogViewer.swift */; };
+		AA0000000000000000000044 /* ZipArchive.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000043 /* ZipArchive.swift */; };
+		AA0000000000000000000046 /* DocumentPicker.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000045 /* DocumentPicker.swift */; };
+		AA0000000000000000000016 /* MMDStudioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000015 /* MMDStudioApp.swift */; };
+		AA0000000000000000000018 /* MMDModelDocument.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000017 /* MMDModelDocument.swift */; };
+		AA000000000000000000001A /* MMDStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000019 /* MMDStore.swift */; };
+		AA000000000000000000001C /* MMDMath.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001B /* MMDMath.swift */; };
+		AA000000000000000000001E /* PMXModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001D /* PMXModel.swift */; };
+		AA0000000000000000000020 /* PMXParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001F /* PMXParser.swift */; };
+		AA0000000000000000000022 /* VMDParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000021 /* VMDParser.swift */; };
+		AA0000000000000000000024 /* MMDAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000023 /* MMDAnimation.swift */; };
+		AA0000000000000000000026 /* MMDTextureLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000025 /* MMDTextureLoader.swift */; };
+		AA0000000000000000000028 /* MMDMeshBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000027 /* MMDMeshBuilder.swift */; };
+		AA000000000000000000002A /* MMDRenderTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000029 /* MMDRenderTypes.swift */; };
+		AA000000000000000000002C /* MMDRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002B /* MMDRenderer.swift */; };
+		AA000000000000000000002E /* Shaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002D /* Shaders.metal */; };
+		AA0000000000000000000030 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000002F /* LibraryView.swift */; };
+		AA0000000000000000000032 /* ModelViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000031 /* ModelViewerView.swift */; };
+		AA0000000000000000000034 /* MMDMetalView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000033 /* MMDMetalView.swift */; };
+		AA0000000000000000000036 /* ColorSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000035 /* ColorSupport.swift */; };
+		AA0000000000000000000038 /* MaterialInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000037 /* MaterialInspectorView.swift */; };
+		AA000000000000000000003A /* MorphBoneInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000039 /* MorphBoneInspectorView.swift */; };
+		AA000000000000000000003C /* SettingsInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003B /* SettingsInspectorView.swift */; };
+		AA000000000000000000003E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000003D /* Assets.xcassets */; };
+		AA0000000000000000000066 /* PMDParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000067 /* PMDParser.swift */; };
+		AA0000000000000000000068 /* MMDPoseParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000069 /* MMDPoseParser.swift */; };
+		AA000000000000000000006A /* MMDModelExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000006B /* MMDModelExport.swift */; };
+		AA000000000000000000006C /* ExportStudioView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000006D /* ExportStudioView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		AA0000000000000000000053 /* MMDStudio-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "MMDStudio-Bridging-Header.h"; sourceTree = "<group>"; };
+		AA0000000000000000000054 /* bcdec.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = bcdec.c; sourceTree = "<group>"; };
+		AA0000000000000000000056 /* bcdec.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = bcdec.h; sourceTree = "<group>"; };
+		AA0000000000000000000047 /* MMDLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDLog.swift; sourceTree = "<group>"; };
+		AA0000000000000000000049 /* DDSDecoder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DDSDecoder.swift; sourceTree = "<group>"; };
+		AA000000000000000000004B /* MMDScreenRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDScreenRecorder.swift; sourceTree = "<group>"; };
+		AA000000000000000000004F /* LogViewer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LogViewer.swift; sourceTree = "<group>"; };
+		AA0000000000000000000043 /* ZipArchive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZipArchive.swift; sourceTree = "<group>"; };
+		AA0000000000000000000045 /* DocumentPicker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DocumentPicker.swift; sourceTree = "<group>"; };
+		AA0000000000000000000009 /* MMDStudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MMDStudio.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA0000000000000000000015 /* MMDStudioApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDStudioApp.swift; sourceTree = "<group>"; };
+		AA0000000000000000000017 /* MMDModelDocument.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDModelDocument.swift; sourceTree = "<group>"; };
+		AA0000000000000000000019 /* MMDStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDStore.swift; sourceTree = "<group>"; };
+		AA000000000000000000001B /* MMDMath.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDMath.swift; sourceTree = "<group>"; };
+		AA000000000000000000001D /* PMXModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PMXModel.swift; sourceTree = "<group>"; };
+		AA000000000000000000001F /* PMXParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PMXParser.swift; sourceTree = "<group>"; };
+		AA0000000000000000000021 /* VMDParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMDParser.swift; sourceTree = "<group>"; };
+		AA0000000000000000000023 /* MMDAnimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDAnimation.swift; sourceTree = "<group>"; };
+		AA0000000000000000000025 /* MMDTextureLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDTextureLoader.swift; sourceTree = "<group>"; };
+		AA0000000000000000000027 /* MMDMeshBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDMeshBuilder.swift; sourceTree = "<group>"; };
+		AA0000000000000000000029 /* MMDRenderTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDRenderTypes.swift; sourceTree = "<group>"; };
+		AA000000000000000000002B /* MMDRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDRenderer.swift; sourceTree = "<group>"; };
+		AA000000000000000000002D /* Shaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = Shaders.metal; sourceTree = "<group>"; };
+		AA000000000000000000002F /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		AA0000000000000000000031 /* ModelViewerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelViewerView.swift; sourceTree = "<group>"; };
+		AA0000000000000000000033 /* MMDMetalView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDMetalView.swift; sourceTree = "<group>"; };
+		AA0000000000000000000035 /* ColorSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorSupport.swift; sourceTree = "<group>"; };
+		AA0000000000000000000037 /* MaterialInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MaterialInspectorView.swift; sourceTree = "<group>"; };
+		AA0000000000000000000039 /* MorphBoneInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MorphBoneInspectorView.swift; sourceTree = "<group>"; };
+		AA000000000000000000003B /* SettingsInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsInspectorView.swift; sourceTree = "<group>"; };
+		AA000000000000000000003D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		AA0000000000000000000041 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		AA0000000000000000000042 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		AA0000000000000000000067 /* PMDParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PMDParser.swift; sourceTree = "<group>"; };
+		AA0000000000000000000069 /* MMDPoseParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDPoseParser.swift; sourceTree = "<group>"; };
+		AA000000000000000000006B /* MMDModelExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDModelExport.swift; sourceTree = "<group>"; };
+		AA000000000000000000006D /* ExportStudioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportStudioView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AA0000000000000000000013 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AA0000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000003 /* MMDStudio */,
+				AA0000000000000000000042 /* README.md */,
+				AA0000000000000000000002 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000003 /* MMDStudio */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000004 /* App */,
+				AA0000000000000000000005 /* Core */,
+				AA0000000000000000000006 /* Render */,
+				AA0000000000000000000007 /* UI */,
+				AA000000000000000000003D /* Assets.xcassets */,
+				AA0000000000000000000041 /* Info.plist */,
+				AA0000000000000000000053 /* MMDStudio-Bridging-Header.h */,
+			);
+			path = MMDStudio;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000004 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000015 /* MMDStudioApp.swift */,
+				AA0000000000000000000017 /* MMDModelDocument.swift */,
+				AA0000000000000000000019 /* MMDStore.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000005 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				AA000000000000000000001B /* MMDMath.swift */,
+				AA000000000000000000001D /* PMXModel.swift */,
+				AA000000000000000000001F /* PMXParser.swift */,
+				AA0000000000000000000021 /* VMDParser.swift */,
+				AA0000000000000000000023 /* MMDAnimation.swift */,
+				AA0000000000000000000067 /* PMDParser.swift */,
+				AA0000000000000000000069 /* MMDPoseParser.swift */,
+				AA000000000000000000006B /* MMDModelExport.swift */,
+				AA0000000000000000000025 /* MMDTextureLoader.swift */,
+				AA0000000000000000000043 /* ZipArchive.swift */,
+				AA0000000000000000000047 /* MMDLog.swift */,
+				AA0000000000000000000049 /* DDSDecoder.swift */,
+				AA000000000000000000004B /* MMDScreenRecorder.swift */,
+				AA0000000000000000000054 /* bcdec.c */,
+				AA0000000000000000000056 /* bcdec.h */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000006 /* Render */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000027 /* MMDMeshBuilder.swift */,
+				AA0000000000000000000029 /* MMDRenderTypes.swift */,
+				AA000000000000000000002B /* MMDRenderer.swift */,
+				AA000000000000000000002D /* Shaders.metal */,
+			);
+			path = Render;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000007 /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				AA000000000000000000002F /* LibraryView.swift */,
+				AA0000000000000000000031 /* ModelViewerView.swift */,
+				AA0000000000000000000033 /* MMDMetalView.swift */,
+				AA0000000000000000000035 /* ColorSupport.swift */,
+				AA0000000000000000000037 /* MaterialInspectorView.swift */,
+				AA0000000000000000000039 /* MorphBoneInspectorView.swift */,
+				AA000000000000000000003B /* SettingsInspectorView.swift */,
+				AA0000000000000000000045 /* DocumentPicker.swift */,
+				AA000000000000000000004F /* LogViewer.swift */,
+				AA000000000000000000006D /* ExportStudioView.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000002 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000009 /* MMDStudio.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		AA000000000000000000000A /* MMDStudio */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA000000000000000000000D /* Build configuration list for PBXNativeTarget "MMDStudio" */;
+			buildPhases = (
+				AA0000000000000000000012 /* Sources */,
+				AA0000000000000000000013 /* Frameworks */,
+				AA0000000000000000000014 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MMDStudio;
+			productName = MMDStudio;
+			productReference = AA0000000000000000000009 /* MMDStudio.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		AA000000000000000000000B /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					AA000000000000000000000A = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = AA000000000000000000000C /* Build configuration list for PBXProject "MMDStudio" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AA0000000000000000000001;
+			productRefGroup = AA0000000000000000000002 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				AA000000000000000000000A /* MMDStudio */,
+			);
+		};
+/* End PBXProject section */
+/* Begin PBXResourcesBuildPhase section */
+		AA0000000000000000000014 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA000000000000000000003E /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AA0000000000000000000012 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA0000000000000000000016 /* MMDStudioApp.swift in Sources */,
+				AA0000000000000000000018 /* MMDModelDocument.swift in Sources */,
+				AA000000000000000000001A /* MMDStore.swift in Sources */,
+				AA000000000000000000001C /* MMDMath.swift in Sources */,
+				AA000000000000000000001E /* PMXModel.swift in Sources */,
+				AA0000000000000000000020 /* PMXParser.swift in Sources */,
+				AA0000000000000000000022 /* VMDParser.swift in Sources */,
+				AA0000000000000000000024 /* MMDAnimation.swift in Sources */,
+				AA0000000000000000000026 /* MMDTextureLoader.swift in Sources */,
+				AA0000000000000000000028 /* MMDMeshBuilder.swift in Sources */,
+				AA000000000000000000002A /* MMDRenderTypes.swift in Sources */,
+				AA000000000000000000002C /* MMDRenderer.swift in Sources */,
+				AA000000000000000000002E /* Shaders.metal in Sources */,
+				AA0000000000000000000030 /* LibraryView.swift in Sources */,
+				AA0000000000000000000032 /* ModelViewerView.swift in Sources */,
+				AA0000000000000000000034 /* MMDMetalView.swift in Sources */,
+				AA0000000000000000000036 /* ColorSupport.swift in Sources */,
+				AA0000000000000000000038 /* MaterialInspectorView.swift in Sources */,
+				AA000000000000000000003A /* MorphBoneInspectorView.swift in Sources */,
+				AA000000000000000000003C /* SettingsInspectorView.swift in Sources */,
+				AA0000000000000000000044 /* ZipArchive.swift in Sources */,
+				AA0000000000000000000046 /* DocumentPicker.swift in Sources */,
+				AA0000000000000000000066 /* PMDParser.swift in Sources */,
+				AA0000000000000000000068 /* MMDPoseParser.swift in Sources */,
+				AA000000000000000000006A /* MMDModelExport.swift in Sources */,
+				AA000000000000000000006C /* ExportStudioView.swift in Sources */,
+				AA0000000000000000000048 /* MMDLog.swift in Sources */,
+				AA000000000000000000004A /* DDSDecoder.swift in Sources */,
+				AA000000000000000000004C /* MMDScreenRecorder.swift in Sources */,
+				AA0000000000000000000050 /* LogViewer.swift in Sources */,
+				AA0000000000000000000055 /* bcdec.c in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		AA000000000000000000000E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+				    "DEBUG=1",
+				    "$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		AA000000000000000000000F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		AA0000000000000000000010 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 20;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MMDStudio/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+				    "$(inherited)",
+				    "@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 12.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mmdstudio.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				SWIFT_OBJC_BRIDGING_HEADER = "MMDStudio/MMDStudio-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				SUPPORTS_MACCATALYST = NO;
+			};
+			name = Debug;
+		};
+		AA0000000000000000000011 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 20;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = MMDStudio/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+				    "$(inherited)",
+				    "@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 12.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.mmdstudio.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+				SWIFT_OBJC_BRIDGING_HEADER = "MMDStudio/MMDStudio-Bridging-Header.h";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				SUPPORTS_MACCATALYST = NO;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		AA000000000000000000000C /* Build configuration list for PBXProject "MMDStudio" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA000000000000000000000E /* Debug */,
+				AA000000000000000000000F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA000000000000000000000D /* Build configuration list for PBXNativeTarget "MMDStudio" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA0000000000000000000010 /* Debug */,
+				AA0000000000000000000011 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = AA000000000000000000000B /* Project object */;
+}

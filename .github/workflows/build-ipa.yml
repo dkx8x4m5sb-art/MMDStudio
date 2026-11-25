@@ -1,0 +1,65 @@
+name: Build IPA
+
+on:
+  push:
+    branches: [ main, v12 ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # xcode-27 镜像自带 Xcode 27.2 + iOS 27.2 SDK（最新 SDK）。
+    # 若该镜像不可用，退回 macos-26（Xcode 26.x）。
+    runs-on: xcode-27
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          echo "iOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+          xcodebuild -showsdks | grep -E "iOS|Simulator" | head -5
+
+      - name: Build IPA
+        run: |
+          chmod +x scripts/build_ipa.sh
+          ./scripts/build_ipa.sh
+
+      - name: Verify package
+        run: |
+          set -euo pipefail
+          APP="build/MMDStudio.xcarchive/Products/Applications/MMDStudio.app"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
+          echo "--- 架构 ---"
+          lipo -archs "$APP/MMDStudio"
+          echo "--- 最低系统 ---"
+          vtool -show-build "$APP/MMDStudio" | grep -E "minos|sdk" | head -4
+          echo "--- 包内是否残留 MediaPipe ---"
+          find "$APP" -iname "*mediapipe*" -o -iname "*pose_landmarker*" | head -5 || true
+          echo "--- 体积 ---"
+          du -sh "$APP" build/*.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MMDStudio-ipa
+          path: build/*.ipa
+          if-no-files-found: error
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log
+          path: build/xcodebuild.log
+          if-no-files-found: ignore
