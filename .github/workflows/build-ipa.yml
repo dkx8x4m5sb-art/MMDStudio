@@ -49,12 +49,40 @@ jobs:
           echo "--- 体积 ---"
           du -sh "$APP" build/*.ipa
 
+      - name: Export symbol map
+        run: |
+          set -euo pipefail
+          DWARF="build/MMDStudio.xcarchive/dSYMs/MMDStudio.app.dSYM/Contents/Resources/DWARF/MMDStudio"
+          ls -la "$(dirname "$DWARF")"
+          xcrun dwarfdump --uuid "$DWARF" | tee build/dsym-uuid.txt
+          # Sorted address -> symbol table, demangled, so a crash offset taken
+          # from a .ips report can be resolved without the dSYM on hand.
+          xcrun nm -n "$DWARF" | xcrun swift-demangle > build/symbols.txt
+          wc -l build/symbols.txt
+          grep -c "MMDStudio" build/symbols.txt || true
+
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: MMDStudio-ipa
           path: build/*.ipa
           if-no-files-found: error
+
+      - name: Upload symbols
+        uses: actions/upload-artifact@v4
+        with:
+          name: MMDStudio-symbols
+          path: |
+            build/symbols.txt
+            build/dsym-uuid.txt
+          if-no-files-found: warn
+
+      - name: Upload dSYM
+        uses: actions/upload-artifact@v4
+        with:
+          name: MMDStudio-dsym
+          path: build/MMDStudio.xcarchive/dSYMs
+          if-no-files-found: warn
 
       - name: Upload build log on failure
         if: failure()
