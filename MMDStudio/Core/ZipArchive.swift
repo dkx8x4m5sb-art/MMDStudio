@@ -53,11 +53,14 @@ enum MMDZipArchive {
         do {
             data = try Data(contentsOf: url, options: [.mappedIfSafe])
         } catch {
-            throw ZipError.invalidArchive("无法读取文件（\(declared) 字节）：\(error.localizedDescription)")
+            throw ZipError.invalidArchive("无法读取文件（\(declared) 字节）：\(error.localizedDescription)。" +
+                                          "如果文件在 iCloud 里，请先点开下载完成再导入")
         }
         // iCloud keeps a placeholder until the file is downloaded; reading it
         // then yields a short buffer and looks exactly like a corrupt ZIP.
-        if declared > 0, data.count != declared {
+        // Only a short read is evidence — a mapped file may legitimately
+        // report a smaller count than the on-disk allocation.
+        if declared > 0, data.count < declared {
             throw ZipError.invalidArchive("只读到 \(data.count)/\(declared) 字节，文件可能还在 iCloud 下载中，请等下载完成再试")
         }
         return try extract(data: data, to: destination)
