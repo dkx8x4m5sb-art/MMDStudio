@@ -323,19 +323,26 @@ final class MMDVideoExporter: ObservableObject {
                         ]
                     ]
                 } else {
+                    // Apple's H.264 hardware encoder tops out at 4K30 (High
+                    // profile level 5.1). Requesting 2160p60 there silently
+                    // produced a 30 fps file — the "target frame rate not
+                    // reached" complaint. HEVC sustains 4K60, so pick the codec
+                    // by pixel rate instead of always asking for H.264.
+                    let needsHEVC = width * height > 1920 * 1080 || fps > 30
+                    var compression: [String: Any] = [
+                        AVVideoAverageBitRateKey: bitrate,
+                        AVVideoMaxKeyFrameIntervalKey: keyframeSeconds * fps,
+                        AVVideoExpectedSourceFrameRateKey: fps,
+                        AVVideoAllowFrameReorderingKey: true
+                    ]
+                    if !needsHEVC {
+                        compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel
+                    }
                     settings = [
-                        AVVideoCodecKey: AVVideoCodecType.h264,
+                        AVVideoCodecKey: needsHEVC ? AVVideoCodecType.hevc : AVVideoCodecType.h264,
                         AVVideoWidthKey: width,
                         AVVideoHeightKey: height,
-                        AVVideoCompressionPropertiesKey: [
-                            AVVideoAverageBitRateKey: bitrate,
-                            AVVideoProfileLevelKey: width * height > 1920 * 1080
-                                ? AVVideoProfileLevelH264HighAutoLevel
-                                : AVVideoProfileLevelH264HighAutoLevel,
-                            AVVideoMaxKeyFrameIntervalKey: keyframeSeconds * fps,
-                            AVVideoExpectedSourceFrameRateKey: fps,
-                            AVVideoAllowFrameReorderingKey: true
-                        ]
+                        AVVideoCompressionPropertiesKey: compression
                     ]
                 }
                 let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
@@ -369,8 +376,14 @@ final class MMDVideoExporter: ObservableObject {
                 }
 
                 var zeroCopyEnabled = true
+                // Render time vs encoder back-pressure. Without this number a
+                // "only 30 fps" report cannot be attributed: it is either the
+                // GPU or the encoder, and the two need different fixes.
+                var renderTotalMs: Double = 0
+                var waitTotalMs: Double = 0
                 for frame in 0..<frameCount {
                     if self.cancelled { break }
+                    let frameStart = CACurrentMediaTime()
                     let frameTime = Float(frame) / Float(max(1, fps)) * document.frameRate
                     var buffer: CVPixelBuffer?
                     var probeBytes: [UInt8]?
@@ -444,10 +457,13 @@ final class MMDVideoExporter: ObservableObject {
                     guard let buffer else {
                         throw MMDLoadError.invalidData("第 \(frame) 帧渲染失败")
                     }
+                    let readyStart = CACurrentMediaTime()
+                    renderTotalMs += (readyStart - frameStart) * 1000
                     while !input.isReadyForMoreMediaData {
                         if self.cancelled { break }
-                        Thread.sleep(forTimeInterval: 0.005)
+                        Thread.sleep(forTimeInterval: 0.002)
                     }
+                    waitTotalMs += (CACurrentMediaTime() - readyStart) * 1000
                     guard adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(frame + frameOffset),
                                                                                timescale: CMTimeScale(fps))) else {
                         throw MMDLoadError.invalidData("第 \(frame) 帧写入失败：\(writer.error?.localizedDescription ?? "unknown")")
@@ -457,6 +473,13 @@ final class MMDVideoExporter: ObservableObject {
                         self.progress = fraction
                         self.statusText = "渲染 \(frame + 1)/\(frameCount) 帧"
                     }
+                }
+                if frameCount > 0 {
+                    let rendered = Double(frameCount)
+                    MMDLog.shared.info(String(format: "Export timing: %.1f ms/frame render, %.1f ms/frame encoder wait, %.1f fps ceiling",
+                                               renderTotalMs / rendered, waitTotalMs / rendered,
+                                               1000.0 / max(0.001, (renderTotalMs + waitTotalMs) / rendered)),
+                                       category: "Export")
                 }
                 input.markAsFinished()
                 if self.cancelled {

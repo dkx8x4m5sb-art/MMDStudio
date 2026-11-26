@@ -567,7 +567,7 @@ enum MMDPhysicsMode: String, CaseIterable, Identifiable {
 /// approximation, not a bit-exact port of Bullet's constraint solver.
 struct MMDPhysicsSettings {
     var mode: MMDPhysicsMode = .secondary
-    var gravity: Float = 0.6
+    var gravity: Float = 0.75
     var stiffness: Float = 0.4
     var damping: Float = 0.35
     var wind: Float = 0.15
@@ -575,7 +575,7 @@ struct MMDPhysicsSettings {
     var collision: Bool = true
     /// Cone limit for a single cloth link, in degrees. The link's own kind
     /// scales this (skirts swing widest), so the visible range is larger.
-    var maxAngle: Float = 40
+    var maxAngle: Float = 50
     var substeps: Int = 2
 
     var enabled: Bool { mode != .off }
@@ -659,12 +659,12 @@ final class MMDSpringPhysics {
         /// mesh collapses into the legs.
         var shapePull: Float {
             switch self {
-            case .skirt: return 0.0055
-            case .ribbon: return 0.0035
-            case .sleeve: return 0.0060
+            case .skirt: return 0.0042
+            case .ribbon: return 0.0030
+            case .sleeve: return 0.0055
             case .wing: return 0.0040
-            case .hair: return 0.0080
-            case .other: return 0.0050
+            case .hair: return 0.0072
+            case .other: return 0.0045
             }
         }
 
@@ -760,7 +760,13 @@ final class MMDSpringPhysics {
         "手首", "wrist", "hand", "指", "finger", "thumb", "足", "leg",
         "脚", "もも", "thigh", "ひざ", "knee", "calf", "shin", "すね",
         "足首", "ankle", "かかと", "heel", "foot", "toe", "つま先", "ひざ",
-        "clavicle", "armature", "全ての親", "allparent"
+        "clavicle", "armature", "全ての親", "allparent",
+        // Chinese rigs (原神 / 星穹铁道 / 绝区零 提取) name limbs 臂/肘/腕/腿/膝.
+        // Without these a whole arm counted as "dangling cloth" and the solver
+        // swung it, which is the arm deformation reported on v1.7.
+        "臂", "肘", "腕", "手", "掌", "腿", "膝", "脚", "踝", "胯", "臀",
+        "胸", "腹", "脊", "脖", "頭", "头", "颈", "肩胛", "锁骨", "手指",
+        "足", "脚趾", "大腿", "小腿", "上臂", "前臂", "股", "胫"
     ]
 
     /// Bones that must never be driven by physics: eyes, mouth, brows and the
@@ -771,6 +777,12 @@ final class MMDSpringPhysics {
         "舌", "tongue", "眉", "brow", "mayu", "睫", "lash", "口", "mouth",
         "唇", "lip", "kuchi", "頬", "cheek", "鼻", "nose", "耳", "ear",
         "face", "顔", "jaw", "顎", "あご", "表情"
+    ]
+
+    /// Bangs are welded to the forehead in MMD too. Letting them swing is what
+    /// looked like "刘海乱飞".
+    private static let rigidKeywords = [
+        "刘海", "前髪", "前发", "bang", "眉", "睫", "ひたい", "forelock"
     ]
 
     private static let helperPrefixes = [
@@ -997,44 +1009,47 @@ final class MMDSpringPhysics {
             let lower = (bone.name + " " + bone.nameEn).lowercased()
             if isCore[index] || hasCoreBelow[index] { continue }
             if Self.faceKeywords.contains(where: { lower.contains($0) }) { continue }
+            if Self.rigidKeywords.contains(where: { lower.contains($0) }) { continue }
             let named = Self.clothKeywords.contains(where: { lower.contains($0) })
             if named || trustGeometry { secondary.insert(index) }
         }
         guard !secondary.isEmpty else { return }
 
-        var chainRoots: [Int] = []
-        for index in secondary.sorted() {
+        // Chains are *paths*, not subtrees. A skirt root has one child per
+        // panel and hair forks at every strand; flattening a subtree into a
+        // single array put distance constraints between bones that are not
+        // linked at all, and the solver tore the garment into spikes. A bone
+        // extends its parent's chain only when it is that chain's current tip,
+        // otherwise it starts a new chain hanging off that bone.
+        var depth = [Int](repeating: 0, count: boneCount)
+        for index in topoOrder {
             let parent = parentIndices[index]
-            if parent >= 0 && secondary.contains(parent) { continue }
-            chainRoots.append(index)
+            depth[index] = parent >= 0 ? depth[parent] + 1 : 0
         }
-        guard !chainRoots.isEmpty else { return }
-
-        // Breadth-first, so every chain is ordered parent before child.
-        var owner = [Int: Int]()
-        for root in chainRoots { owner[root] = root }
-        var queue = chainRoots
-        var cursor = 0
-        var grouped = [Int: [Int]]()
-        while cursor < queue.count {
-            let bone = queue[cursor]
-            cursor += 1
-            guard let root = owner[bone] else { continue }
-            grouped[root, default: []].append(bone)
-            for child in childIndices[bone] where secondary.contains(child) {
-                if owner[child] == nil {
-                    owner[child] = root
-                    queue.append(child)
-                }
+        let ordered = secondary.sorted { depth[$0] < depth[$1] }
+        var chainOf = [Int: Int]()
+        var bonesOf: [[Int]] = []
+        var lastOf: [Int] = []
+        for bone in ordered {
+            let parent = parentIndices[bone]
+            if parent >= 0, let chain = chainOf[parent], lastOf[chain] == parent {
+                bonesOf[chain].append(bone)
+                chainOf[bone] = chain
+                lastOf[chain] = bone
+            } else {
+                bonesOf.append([bone])
+                lastOf.append(bone)
+                chainOf[bone] = bonesOf.count - 1
             }
         }
+        guard !bonesOf.isEmpty else { return }
 
         let minSegment = max(0.004, modelHeight * 0.0015)
         let minChain = max(0.02, modelHeight * 0.012)
         var kindCounts: [String: Int] = [:]
 
-        for root in chainRoots {
-            guard let bones = grouped[root], !bones.isEmpty, bones.count <= 64 else { continue }
+        for bones in bonesOf where !bones.isEmpty && bones.count <= 64 {
+            guard let root = bones.first else { continue }
             let rootPos = restWorldPos[root]
             var lengths: [Float] = []
             var dirs: [SIMD3<Float>] = []
@@ -1045,8 +1060,13 @@ final class MMDSpringPhysics {
                 var tail: SIMD3<Float>? = nil
                 if i + 1 < bones.count {
                     tail = restWorldPos[bones[i + 1]]
-                } else if !childIndices[bone].isEmpty {
-                    tail = restWorldPos[childIndices[bone][0]]
+                } else if let child = childIndices[bone].first {
+                    // A procedural child can sit on the other side of the
+                    // model; using it as the tip stretches the last link into
+                    // the spikes seen on skirts.
+                    let delta = restWorldPos[child] - restWorldPos[bone]
+                    let limit = max(modelHeight * 0.08, i > 0 ? lengths[i - 1] * 4 : 0)
+                    if simd_length(delta) <= limit { tail = restWorldPos[child] }
                 }
                 var length = modelHeight * 0.02
                 var dir = SIMD3<Float>(0, -1, 0)
@@ -1103,11 +1123,9 @@ final class MMDSpringPhysics {
 
         if chains.reduce(0, { $0 + $1.bones.count }) > 600 {
             // A rig with hundreds of dangling helper bones would otherwise
-            // cost more than the render. Keep the longest chains, they are the
-            // ones that read as cloth.
-            chains.sort { lhs, rhs in
-                lhs.lengths.reduce(0, +) > rhs.lengths.reduce(0, +)
-            }
+            // cost more than the render. Chains are kept in depth order — a
+            // sort here would put a child chain before its anchor and leave it
+            // hanging off a bone that never moves.
             var budget = 600
             var kept: [Chain] = []
             for chain in chains where chain.bones.count <= budget {
@@ -1349,9 +1367,27 @@ final class MMDSpringPhysics {
                     chain.points[i] = pushOut(chain.points[i])
                 }
                 chain.points[0] = anchorPos
+
+                // Safety net. The cone allows a link to swing, it must never
+                // leave the body by more than ~1.5x its rest offset: one bad
+                // frame (teleporting anchor, collider popping) otherwise flings
+                // a spike out of the skirt that never comes back.
+                for i in 1..<chain.points.count {
+                    let target = anchorPos + anchorQuat.act(chain.restOffset[i - 1])
+                    let limit = max(chain.restOffset[i - 1].length * 1.45, modelHeight * 0.02)
+                    let offset = chain.points[i] - target
+                    let distance = simd_length(offset)
+                    if distance > limit {
+                        chain.points[i] = target + offset * (limit / distance)
+                    }
+                }
             }
 
             chains[chainIndex] = chain
+            // Deeper chains may hang off this one; publish the solved
+            // transforms now so a strand anchored to a skirt bone follows the
+            // cloth instead of the skeleton pose.
+            updateTransforms(chain)
         }
     }
 
@@ -1393,24 +1429,38 @@ final class MMDSpringPhysics {
         return false
     }
 
+    /// Turns the solved particle positions into bone orientations, writes them
+    /// into the world mirror and returns the local rotations.
+    ///
+    /// Rotating the rest direction onto the solved one with the *shortest arc
+    /// in the parent frame* keeps the bone's roll, so a flat sash stays flat
+    /// instead of twisting on its axis.
+    @discardableResult
+    private func updateTransforms(_ chain: Chain) -> [simd_quatf] {
+        var rotations: [simd_quatf] = []
+        rotations.reserveCapacity(chain.bones.count)
+        var quat = chain.anchorBone >= 0 ? worldQuat[chain.anchorBone] : mmdIdentityQuaternion
+        for j in 0..<chain.bones.count {
+            let bone = chain.bones[j]
+            let segment = chain.points[j + 1] - chain.points[j]
+            let worldDir = segment.unit
+            let localDir = (worldDir == .zero ? chain.restDirs[j] : quat.inverse.act(worldDir)).unit
+            let rotation = quatNormalize(quatBetween(chain.restDirs[j], localDir))
+            quat = quatNormalize(quat * rotation)
+            worldQuat[bone] = quat
+            worldPos[bone] = chain.points[j]
+            rotations.append(rotation)
+        }
+        return rotations
+    }
+
     private func emitChains(into result: inout [Int: MMDBoneAnimation]) {
         for chain in chains {
-            var quat = chain.anchorBone >= 0 ? worldQuat[chain.anchorBone] : mmdIdentityQuaternion
+            let rotations = updateTransforms(chain)
             for j in 0..<chain.bones.count {
-                let bone = chain.bones[j]
-                let segment = chain.points[j + 1] - chain.points[j]
-                let worldDir = segment.unit
-                let localDir = (worldDir == .zero ? chain.restDirs[j] : quat.inverse.act(worldDir)).unit
-                // Rotating the rest direction onto the solved one with the
-                // *shortest arc in the parent frame* keeps the bone's roll, so
-                // a flat sash stays flat instead of twisting on its axis.
-                let rotation = quatNormalize(quatBetween(chain.restDirs[j], localDir))
-                quat = quatNormalize(quat * rotation)
-                worldQuat[bone] = quat
-                worldPos[bone] = chain.points[j]
-                var animation = result[bone] ?? MMDBoneAnimation()
-                animation.rotation = rotation
-                result[bone] = animation
+                var animation = result[chain.bones[j]] ?? MMDBoneAnimation()
+                animation.rotation = rotations[j]
+                result[chain.bones[j]] = animation
             }
         }
     }
