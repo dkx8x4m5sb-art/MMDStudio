@@ -137,11 +137,15 @@ struct LibraryView: View {
                     Section {
                         ForEach(section.entries) { modelRow($0) }
                     } header: {
-                        HStack(spacing: 6) {
-                            Label(section.title, systemImage: "folder")
-                            Text("\(section.entries.count)")
-                                .font(.caption.monospacedDigit())
-                            Spacer()
+                        // A lone character would otherwise repeat its own name
+                        // as both the folder and the only row.
+                        if section.entries.count > 1 || section.title != section.entries.first?.displayName {
+                            HStack(spacing: 6) {
+                                Label(section.title, systemImage: "folder")
+                                Text("\(section.entries.count)")
+                                    .font(.caption.monospacedDigit())
+                                Spacer()
+                            }
                         }
                     }
                 }
