@@ -501,6 +501,10 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
                                          max(0, lightSettings.worldIntensity), 0, 0)
         scene.worldSkyColor = lightSettings.worldSkyColor
         scene.worldGroundColor = lightSettings.worldGroundColor
+        scene.renderParams = SIMD4<Float>(max(0.5, min(4.0, lightSettings.outlineWidth)),
+                                      max(0.0, min(2.0, lightSettings.specularStrength)),
+                                      max(0.0, min(1.0, lightSettings.skinScatter)),
+                                      0.35)
 
         // Video frames skip MSAA: 4× at 4K was the single largest GPU cost and
         // the encoder's own filtering masks the difference.
@@ -670,7 +674,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             bindMeshBuffers(encoder, mesh: mesh)
             setScene(scene, encoder: encoder, vertexIndex: 6)
             if let paletteBuffer = updatePaletteBuffer(pose.palettes) {
-                encoder.setVertexBuffer(paletteBuffer, offset: 0, index: 8)
+                encoder.setVertexBuffer(paletteBuffer, offset: 0, index: 9)
             }
             encoder.setCullMode(.front)
             for submesh in mesh.subMeshes {
@@ -698,7 +702,10 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             let settings = document.materialSettings[submesh.materialIndex]
             return settings.visible && settings.diffuse.w < 0.999
         }.sorted { lhs, rhs in
-            simd_distance(lhs.center, eye) > simd_distance(rhs.center, eye)
+            // MMD authors translucent layers in material order (inner layer
+            // first). Sorting by view distance broke that contract and let
+            // skirts and veils bleed through the body at shallow angles.
+            lhs.materialIndex < rhs.materialIndex
         }
 
         if !transparentMeshes.isEmpty {
@@ -1096,6 +1103,25 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             ? renderSettings.renderMode : .realistic
         uniforms.renderMode = effectiveRenderMode.index
 
+        // The cel shader needs to know which surfaces are skin (warm light
+        // bleed at the terminator) and which are metal (harder, brighter
+        // highlight). PMX has no material-type field, so the authored name is
+        // the only signal available.
+        let materialName = (material.name + " " + material.nameEn).lowercased()
+        let isSkin = materialName.contains("肌") || materialName.contains("skin")
+            || materialName.contains("顔") || materialName.contains("face")
+            || materialName.contains("body") || materialName.contains("体")
+            || materialName.contains("腕") || materialName.contains("脚")
+            || materialName.contains("足")
+        let isMetal = materialName.contains("金属") || materialName.contains("metal")
+            || materialName.contains("刀") || materialName.contains("剣")
+            || materialName.contains("鎧") || materialName.contains("armor")
+            || materialName.contains("belt") || materialName.contains("バックル")
+        uniforms.toonControl = SIMD4<Float>(1.0,
+                                            isMetal ? 1.0 : 0.0,
+                                            isSkin ? 1.0 : 0.0,
+                                            1.0)
+
         var materialFlags: UInt32 = flags
         if texturePresent { materialFlags |= 1 }
         if spherePresent && settings.sphereMode != 0 { materialFlags |= 2 }
@@ -1113,6 +1139,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         encoder.setVertexBuffer(mesh.boneIndicesBuffer, offset: 0, index: 3)
         encoder.setVertexBuffer(mesh.weightsBuffer, offset: 0, index: 4)
         encoder.setVertexBuffer(mesh.edgeScalesBuffer, offset: 0, index: 5)
+        encoder.setVertexBuffer(mesh.sdefBuffer, offset: 0, index: 8)
     }
 
     private func setScene(_ scene: MMDSceneUniforms, encoder: MTLRenderCommandEncoder, vertexIndex: Int) {
@@ -1231,7 +1258,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
                 encoder.setRenderPipelineState(edgePipeline)
                 encoder.setDepthStencilState(overlayDepthState)
                 encoder.setDepthBias(0.0006, slopeScale: 1.2, clamp: 0)
-                if let palette = item.paletteBuffer { encoder.setVertexBuffer(palette, offset: 0, index: 8) }
+                if let palette = item.paletteBuffer { encoder.setVertexBuffer(palette, offset: 0, index: 7) }
                 encoder.setCullMode(.front)
                 for submesh in item.mesh.subMeshes {
                     let materialIndex = submesh.materialIndex
@@ -1545,6 +1572,10 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
                                          max(0, lightSettings.worldIntensity), 0, 0)
         scene.worldSkyColor = lightSettings.worldSkyColor
         scene.worldGroundColor = lightSettings.worldGroundColor
+        scene.renderParams = SIMD4<Float>(max(0.5, min(4.0, lightSettings.outlineWidth)),
+                                      max(0.0, min(2.0, lightSettings.specularStrength)),
+                                      max(0.0, min(1.0, lightSettings.skinScatter)),
+                                      0.35)
 
         encoder.setViewport(MTLViewport(originX: 0, originY: 0,
                                         width: Double(view.drawableSize.width),
@@ -1645,7 +1676,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             bindMeshBuffers(encoder, mesh: mesh)
             setScene(scene, encoder: encoder, vertexIndex: 6)
             if let paletteBuffer = updatePaletteBuffer(pose.palettes) {
-                encoder.setVertexBuffer(paletteBuffer, offset: 0, index: 8)
+                encoder.setVertexBuffer(paletteBuffer, offset: 0, index: 9)
             }
             encoder.setCullMode(.front)
             for submesh in mesh.subMeshes {
@@ -1678,7 +1709,10 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             let settings = document.materialSettings[submesh.materialIndex]
             return settings.visible && settings.diffuse.w < 0.999
         }.sorted { lhs, rhs in
-            simd_distance(lhs.center, eye) > simd_distance(rhs.center, eye)
+            // MMD authors translucent layers in material order (inner layer
+            // first). Sorting by view distance broke that contract and let
+            // skirts and veils bleed through the body at shallow angles.
+            lhs.materialIndex < rhs.materialIndex
         }
 
         if !transparentMeshes.isEmpty {

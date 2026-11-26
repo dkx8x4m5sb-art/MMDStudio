@@ -28,6 +28,9 @@ struct SceneUniforms {
     float4 worldParams;     // x: wrap scattering, y: world intensity
     float4 worldSkyColor;
     float4 worldGroundColor;
+    // x: outline width in pixels, y: specular strength, z: skin scatter,
+    // w: shadow hue shift.
+    float4 renderParams;
     Light lights[8];
 };
 
@@ -39,6 +42,9 @@ struct MaterialUniforms {
     float4 textureTint;
     float4 sphereTint;
     float4 toonTint;
+    // x: specular strength multiplier, y: metalness, z: skin flag,
+    // w: outline width multiplier.
+    float4 toonControl;
     float edgeSize;
     float alphaTest;
     int sphereMode;
@@ -59,7 +65,56 @@ struct MeshVertexOut {
     float3 viewNormal;
     float2 uv;
     float edgeScale;
+    float3 viewPosition;
 };
+
+/// Skinning helpers. Shared by the body pass and the outline pass so both see
+/// exactly the same deformed surface.
+static inline float4 mmdSkinPosition(uint vid,
+                                     float3 position,
+                                     device const uint4 *boneIndices,
+                                     device const float4 *weights,
+                                     device const float4x4 *palette,
+                                     device const float4 *sdef) {
+    uint4 bi = boneIndices[vid];
+    float4 w = weights[vid];
+    float4 center = sdef[vid * 3 + 0];
+    if (center.w > 0.5) {
+        // SDEF: the vertex rides a sphere whose centre follows both bones.
+        // Treating these as plain BDEF2 (the old behaviour) collapsed skirts
+        // and cuffs into the body while the legs moved.
+        float4 r0 = sdef[vid * 3 + 1];
+        float4 r1 = sdef[vid * 3 + 2];
+        float3 local = position - center.xyz;
+        float3 p0 = (palette[bi.x] * float4(local + r0.xyz, 1.0)).xyz;
+        float3 p1 = (palette[bi.y] * float4(local + r1.xyz, 1.0)).xyz;
+        return float4(w.x * p0 + w.y * p1, 1.0);
+    }
+    return w.x * (palette[bi.x] * float4(position, 1.0))
+         + w.y * (palette[bi.y] * float4(position, 1.0))
+         + w.z * (palette[bi.z] * float4(position, 1.0))
+         + w.w * (palette[bi.w] * float4(position, 1.0));
+}
+
+static inline float3 mmdSkinNormal(uint vid,
+                                   float3 normal,
+                                   device const uint4 *boneIndices,
+                                   device const float4 *weights,
+                                   device const float4x4 *palette,
+                                   device const float4 *sdef) {
+    uint4 bi = boneIndices[vid];
+    float4 w = weights[vid];
+    float4 center = sdef[vid * 3 + 0];
+    if (center.w > 0.5) {
+        float3 n0 = (palette[bi.x] * float4(normal, 0.0)).xyz;
+        float3 n1 = (palette[bi.y] * float4(normal, 0.0)).xyz;
+        return w.x * n0 + w.y * n1;
+    }
+    return w.x * (palette[bi.x] * float4(normal, 0.0)).xyz
+         + w.y * (palette[bi.y] * float4(normal, 0.0)).xyz
+         + w.z * (palette[bi.z] * float4(normal, 0.0)).xyz
+         + w.w * (palette[bi.w] * float4(normal, 0.0)).xyz;
+}
 
 // MARK: - Mesh
 
@@ -71,23 +126,14 @@ vertex MeshVertexOut mmd_mesh_vertex(uint vid [[vertex_id]],
                                      device const float4 *weights [[buffer(4)]],
                                      device const float *edgeScales [[buffer(5)]],
                                      constant SceneUniforms &scene [[buffer(6)]],
-                                     device const float4x4 *palette [[buffer(7)]]) {
-    uint4 bi = boneIndices[vid];
-    float4 w = weights[vid];
-    float3 position = positions[vid];
-    float3 normal = normals[vid];
+                                     device const float4x4 *palette [[buffer(7)]],
+                                     device const float4 *sdef [[buffer(8)]]) {
+    float3 skinned = mmdSkinPosition(vid, positions[vid], boneIndices, weights, palette, sdef).xyz;
+    float3 skinnedNormal = mmdSkinNormal(vid, normals[vid], boneIndices, weights, palette, sdef);
 
-    float4 skinned = w.x * (palette[bi.x] * float4(position, 1.0))
-                   + w.y * (palette[bi.y] * float4(position, 1.0))
-                   + w.z * (palette[bi.z] * float4(position, 1.0))
-                   + w.w * (palette[bi.w] * float4(position, 1.0));
-    float3 skinnedNormal = w.x * (palette[bi.x] * float4(normal, 0.0)).xyz
-                         + w.y * (palette[bi.y] * float4(normal, 0.0)).xyz
-                         + w.z * (palette[bi.z] * float4(normal, 0.0)).xyz
-                         + w.w * (palette[bi.w] * float4(normal, 0.0)).xyz;
-
-    float4 world = scene.model * float4(skinned.xyz, 1.0);
+    float4 world = scene.model * float4(skinned, 1.0);
     float3 worldNormal = normalize((scene.normalMatrix * float4(skinnedNormal, 0.0)).xyz);
+    float4 view = scene.view * world;
 
     MeshVertexOut out;
     out.position = scene.viewProjection * world;
@@ -96,7 +142,20 @@ vertex MeshVertexOut mmd_mesh_vertex(uint vid [[vertex_id]],
     out.viewNormal = normalize((scene.view * float4(worldNormal, 0.0)).xyz);
     out.uv = uvs[vid];
     out.edgeScale = edgeScales[vid];
+    out.viewPosition = view.xyz;
     return out;
+}
+
+/// Cel ramp with antialiased steps. `fwidth` keeps the terminator one pixel
+/// wide at any resolution, which is what stops a two-tone shader from looking
+/// like a jagged stencil on hair and fingers.
+static inline float mmdToonRamp(float value, float steps, float softness) {
+    float scaled = clamp(value, 0.0, 1.0) * steps;
+    float level = floor(scaled);
+    float fraction = scaled - level;
+    float aa = max(fwidth(scaled) * 1.2, max(softness * 0.5, 0.001));
+    float blend = smoothstep(0.5 - aa, 0.5 + aa, fraction);
+    return clamp((level + blend) / max(steps, 1.0), 0.0, 1.0);
 }
 
 fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
@@ -122,8 +181,7 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
     }
     float3 V = normalize(scene.cameraPosition.xyz - in.worldPosition);
 
-    // Sphere maps are a material-level reflection term and must be applied
-    // before choosing the shading model; inspection modes still override it.
+    // Sphere maps are authored per material and stay in every mode.
     if ((mat.flags & kFlagHasSphere) != 0) {
         float2 sphereUV = in.viewNormal.xy;
         sphereUV = sphereUV * 0.5 + 0.5;
@@ -146,10 +204,11 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
     float3 directLight = float3(0.0);
     float3 specularSum = float3(0.0);
     float mainNdl = 0.0;
+    float3 keyLightColor = scene.lightColor.rgb;
 
-    // Evaluate up to eight user lights. Spot lights include range falloff and
-    // a smooth inner/outer cone; world scattering wraps direct light around
-    // the terminator instead of introducing another hard shadow.
+    // Evaluate up to eight user lights. The toon modes keep a single key
+    // light (the first sun) for the ramp and use the rest as ambient/fill, so
+    // a fill light never creates a second hard terminator.
     bool toonOnly = mat.renderMode == 0;
     bool mainSunSet = false;
     int lightCount = min(8, max(0, int(scene.lightCount.x)));
@@ -162,7 +221,10 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
             ambientLight += light.color.rgb * light.params.y;
             continue;
         }
-        if (toonOnly && type != 0) { continue; }
+        if (toonOnly && type != 0) {
+            ambientLight += light.color.rgb * light.params.y * 0.18;
+            continue;
+        }
         float3 toLight;
         float attenuation = 1.0;
         if (type == 0) {
@@ -186,8 +248,8 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
         float ndl = max((dot(N, toLight) + wrap) / (1.0 + wrap), 0.0);
         if (toonOnly) {
             if (!mainSunSet) {
-                mainNdl = ndl;
-                directLight = light.color.rgb * light.params.y * ndl;
+                mainNdl = clamp(dot(N, toLight), -1.0, 1.0);
+                keyLightColor = light.color.rgb * light.params.y;
                 mainSunSet = true;
             }
         } else {
@@ -200,34 +262,18 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
         }
     }
 
-    // Fallback for scenes that have no explicit light array.
     if (lightCount == 0 || (toonOnly && !mainSunSet)) {
         float3 L = normalize(scene.lightDirection.xyz);
-        mainNdl = max(dot(N, L), 0.0);
-        directLight = scene.lightColor.rgb * mainNdl;
+        mainNdl = clamp(dot(N, L), -1.0, 1.0);
+        directLight = scene.lightColor.rgb * max(mainNdl, 0.0);
+        keyLightColor = scene.lightColor.rgb;
         ambientLight = scene.ambientColor.rgb * ambientStrength;
     }
 
-    float litRaw = clamp(mainNdl * 0.5 + 0.5, 0.0, 1.0);
-    float style = scene.params.w;
-    float stepCount = max(2.0, scene.lightCount.w);
-    float bandIndex = floor(clamp(mainNdl, 0.0, 1.0) * stepCount);
-    float bandValue = mix(0.42, 1.0, bandIndex / max(1.0, stepCount - 1.0));
-    // A tiny amount of anti-aliasing around the terminator keeps the edge
-    // readable at high resolution without turning the preset back into PBR.
-    float toonSoftness = clamp(scene.toonParams.x, 0.0, 0.45);
-    bandValue = mix(bandValue, smoothstep(0.0, 1.0, clamp(mainNdl, 0.0, 1.0)), toonSoftness);
-    if ((mat.flags & kFlagHasToon) != 0) {
-        float ramp = clamp(toonMap.sample(clampSampler, float2(litRaw, 0.5)).r * mat.toonTint.r, 0.12, 1.0);
-        // MMD standard honors the authored ramp. Game-style presets bias
-        // toward the procedural band so the look stays consistent across
-        // models that ship very different toon textures.
-        bandValue = mix(bandValue, ramp, 0.35);
-    }
-
+    float3 L = normalize(scene.lightDirection.xyz);
     float3 color = base.rgb;
+
     if (mat.renderMode == 2) {
-        // Unlit inspection: preserve the texture exactly.
         color = base.rgb;
     } else if (mat.renderMode == 3) {
         color = N * 0.5 + 0.5;
@@ -238,8 +284,6 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
     } else if (mat.renderMode == 5) {
         color = float3(0.20, 0.80, 1.0);
     } else if (mat.renderMode == 1) {
-        // Realistic: all direct lights + a subtle fill/rim term and specular.
-        float3 L = normalize(scene.lightDirection.xyz);
         float3 fillDirection = normalize(float3(-L.x, 0.30, -L.z));
         float fill = max(dot(N, fillDirection), 0.0) * clamp(scene.lightParams.y, 0.0, 1.0);
         float rim = pow(1.0 - max(dot(N, V), 0.0), 2.0) * clamp(scene.lightParams.z, 0.0, 1.0);
@@ -249,39 +293,85 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
         color += mat.specular.rgb * pow(max(dot(N, normalize(L + V)), 0.0),
                                         max(mat.specular.w, 1.0)) * 0.35 + specularSum;
     } else {
-        // Toon presets. The game looks share one quantized key light and
-        // differ in shadow temperature, terminator softness, rim and
-        // contrast. No PBR specular, fill wash or broad realistic rim is
-        // applied here.
-        float shadowLift = clamp(scene.toonParams.y, 0.0, 1.0);
+        // MARK: Cel shading (Genshin-style)
+        //
+        // The reference shader (GenshinCelShaderURP) builds its look from a
+        // small number of hard decisions rather than from a physically based
+        // light integral: one quantized key-light ramp, a hue-shifted shadow
+        // that keeps saturation, a ladder highlight, a rim term that only
+        // appears on the lit side, and an inverted-hull outline. This is that
+        // structure, driven by the PMX material data we actually have.
+        float steps = max(2.0, scene.lightCount.w);
+        float softness = clamp(scene.toonParams.x, 0.0, 0.45);
+        float lift = clamp(scene.toonParams.y, 0.0, 1.0);
         float rimAmount = clamp(scene.toonParams.z, 0.0, 1.0);
         float tintStrength = clamp(scene.toonShadowTint.a, 0.0, 1.0);
         float3 shadowTint = scene.toonShadowTint.rgb;
-        float3 rimTint = float3(1.0, 0.96, 0.92);
-        if (style >= 0.5 && style < 1.5) {
-            rimTint = float3(1.0, 0.88, 0.78);
-        } else if (style >= 1.5 && style < 2.5) {
-            rimTint = float3(0.55, 0.78, 1.0);
-        } else if (style >= 2.5) {
-            rimTint = float3(1.0, 0.72, 0.36);
-        }
+        float metalness = clamp(mat.toonControl.y, 0.0, 1.0);
+        float isSkin = clamp(mat.toonControl.z, 0.0, 1.0);
+        float specScale = clamp(scene.renderParams.y, 0.0, 2.0) * max(mat.toonControl.x, 0.0);
 
-        // A lifted two-tone ramp: the dark side keeps texture detail and
-        // enough base color, instead of multiplying skin into a gray patch.
+        float litRaw = mainNdl * 0.5 + 0.5;
+        float ramp = mmdToonRamp(litRaw, steps, softness);
+        // Authored toon ramps still carry the model's intent; blend them in
+        // without letting them flatten the style presets.
+        if ((mat.flags & kFlagHasToon) != 0) {
+            float authored = clamp(toonMap.sample(clampSampler, float2(litRaw, 0.5)).r
+                                   * mat.toonTint.r, 0.0, 1.0);
+            ramp = mix(ramp, authored, 0.30);
+        }
+        // Metal reads as "always somewhat lit" on its highlight side.
+        ramp = mix(ramp, max(ramp, 0.55), metalness * 0.5);
+
+        // Shadow keeps the albedo hue instead of turning grey: multiply by a
+        // tinted factor, then lift the floor so cloth does not crush.
         float3 shadowColor = base.rgb * mix(float3(1.0), shadowTint, tintStrength)
-                           * (0.40 + shadowLift * 0.42);
-        float3 lightColor = base.rgb * (0.94 + 0.10 * bandValue);
-        color = mix(shadowColor, lightColor, bandValue);
-        // Ambient/fill barely shape the toon ramp, but they prevent crushed
-        // blacks in clothing and hair.
-        color *= (0.90 + ambientStrength * 0.20);
-        color += base.rgb * mat.ambient.rgb * 0.045;
-        float rimMask = pow(1.0 - max(dot(N, V), 0.0), 2.4);
-        color += base.rgb * rimTint * rimMask * rimAmount;
+                           * mix(0.42, 0.80, lift);
+        float3 litColor = base.rgb * (0.97 + 0.06 * ramp);
+        // Shadow term is tinted by the key light so a warm sun and a cold fill
+        // produce different shadow temperatures.
+        litColor *= mix(float3(1.0), keyLightColor, 0.35);
+
+        color = mix(shadowColor, litColor, ramp);
+        color += base.rgb * ambientLight * 0.30;
+
+        // Ladder highlight. A hard specular step is the single strongest
+        // "anime" cue after the ramp; MMD materials already carry the colour
+        // and power so it needs no extra authoring.
+        float3 H = normalize(L + V);
+        float specPower = max(mat.specular.w, 1.0);
+        float spec = pow(max(dot(N, H), 0.0), specPower);
+        float specAA = max(fwidth(spec) * 1.4, 0.02);
+        float specMask = smoothstep(0.35 - specAA, 0.45 + specAA, spec);
+        float specFacing = smoothstep(-0.1, 0.35, ramp);
+        color += mat.specular.rgb * keyLightColor * specMask * specScale
+               * (0.35 + 0.65 * specFacing) * (1.0 + metalness);
+
+        // Rim light on the lit silhouette. Genshin keeps it off the shadow
+        // side, which is what makes it read as a contour instead of a fog.
+        float fresnel = 1.0 - saturate(dot(N, V));
+        float rim = smoothstep(0.55, 0.98, fresnel);
+        rim *= saturate(ramp * 1.6 - 0.15);
+        float3 rimTint = float3(1.0, 0.97, 0.94);
+        if (scene.params.w >= 0.5 && scene.params.w < 1.5) {
+            rimTint = float3(1.0, 0.90, 0.80);
+        } else if (scene.params.w >= 1.5 && scene.params.w < 2.5) {
+            rimTint = float3(0.62, 0.82, 1.0);
+        } else if (scene.params.w >= 2.5) {
+            rimTint = float3(1.0, 0.74, 0.40);
+        }
+        color += rimTint * rim * rimAmount * 0.85;
+
+        // Skin and thin cloth bleed warm light through the terminator.
+        float scatter = isSkin * clamp(scene.renderParams.z, 0.0, 1.0);
+        if (scatter > 0.001) {
+            float bleed = (1.0 - ramp) * smoothstep(0.05, 0.75, litRaw) * (0.35 + 0.65 * fresnel);
+            color += base.rgb * float3(1.0, 0.52, 0.42) * bleed * scatter * 0.55;
+        }
     }
 
-    // Photo / camera grade. Kept after both the toon and realistic branches so
-    // the same exposure and color controls affect every render mode.
+    // Photo / camera grade, applied to every mode.
+    float style = scene.params.w;
     float styleSaturation = style < 0.5 ? 1.0 : (style < 1.5 ? 1.12 : (style < 2.5 ? 1.04 : 1.22));
     float saturation = clamp(scene.ambientColor.a * styleSaturation, 0.55, 1.75);
     float luma = dot(color, float3(0.299, 0.587, 0.114));
@@ -301,7 +391,7 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
     return float4(color, alpha);
 }
 
-// MARK: - Edge (inverted hull, front faces culled)
+// MARK: - Edge (inverted hull, front faces culled, constant pixel width)
 
 struct EdgeVertexOut {
     float4 position [[position]];
@@ -315,22 +405,29 @@ vertex EdgeVertexOut mmd_edge_vertex(uint vid [[vertex_id]],
                                      device const float *edgeScales [[buffer(5)]],
                                      constant SceneUniforms &scene [[buffer(6)]],
                                      constant MaterialUniforms &mat [[buffer(7)]],
-                                     device const float4x4 *palette [[buffer(8)]]) {
-    uint4 bi = boneIndices[vid];
-    float4 w = weights[vid];
-    float4 skinned = w.x * (palette[bi.x] * float4(positions[vid], 1.0))
-                   + w.y * (palette[bi.y] * float4(positions[vid], 1.0))
-                   + w.z * (palette[bi.z] * float4(positions[vid], 1.0))
-                   + w.w * (palette[bi.w] * float4(positions[vid], 1.0));
-    float3 skinnedNormal = normalize(w.x * (palette[bi.x] * float4(normals[vid], 0.0)).xyz
-                         + w.y * (palette[bi.y] * float4(normals[vid], 0.0)).xyz
-                         + w.z * (palette[bi.z] * float4(normals[vid], 0.0)).xyz
-                         + w.w * (palette[bi.w] * float4(normals[vid], 0.0)).xyz);
+                                     device const float4x4 *palette [[buffer(8)]],
+                                     device const float4 *sdef [[buffer(9)]]) {
+    float3 skinned = mmdSkinPosition(vid, positions[vid], boneIndices, weights, palette, sdef).xyz;
+    float3 skinnedNormal = normalize(mmdSkinNormal(vid, normals[vid], boneIndices, weights, palette, sdef));
 
-    float width = mat.edgeSize * max(edgeScales[vid], 0.0) * 0.025 * scene.params.z;
-    float3 pushed = skinned.xyz + skinnedNormal * width;
+    float4 world = scene.model * float4(skinned, 1.0);
+    float4 clip = scene.viewProjection * world;
+    float3 viewNormal = normalize((scene.view * float4(skinnedNormal, 0.0)).xyz);
+
+    // Push the hull out in screen space so the line weight stays identical
+    // whether the camera is 3 units or 30 units away.
+    float2 direction = viewNormal.xy;
+    float magnitude = length(direction);
+    direction = magnitude > 0.0001 ? direction / magnitude : float2(0.0, 1.0);
+    float pixels = max(0.4, scene.renderParams.x)
+                 * clamp(mat.edgeSize, 0.25, 4.0)
+                 * clamp(edgeScales[vid], 0.15, 4.0)
+                 * clamp(scene.params.z, 0.0, 4.0);
+    float2 viewport = max(scene.viewportSize.xy, float2(1.0, 1.0));
+    clip.xy += direction * (pixels * 2.0 / viewport) * clip.w;
+
     EdgeVertexOut out;
-    out.position = scene.viewProjection * (scene.model * float4(pushed, 1.0));
+    out.position = clip;
     return out;
 }
 

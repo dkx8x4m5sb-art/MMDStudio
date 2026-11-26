@@ -10,6 +10,15 @@ struct PMXVertex {
     var boneIndices: SIMD4<UInt32>
     var boneWeights: SIMD4<Float>
     var edgeScale: Float
+    /// 0 = BDEF1, 1 = BDEF2, 2 = BDEF4, 3 = SDEF, 4 = QDEF.
+    var skinType: UInt8 = 0
+    /// SDEF sphere centre plus the two bone-relative radii. Only valid when
+    /// `skinType == 3`; the renderer uploads them as a third vertex stream.
+    var sdefCenter: SIMD3<Float> = .zero
+    var sdefRadius0: SIMD3<Float> = .zero
+    var sdefRadius1: SIMD3<Float> = .zero
+
+    var isSDEF: Bool { skinType == 3 }
 }
 
 struct PMXMaterial {

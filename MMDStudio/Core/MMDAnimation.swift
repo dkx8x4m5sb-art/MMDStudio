@@ -12,196 +12,350 @@ struct MMDSkeletonPose {
 }
 
 /// Computes skinning matrices for the PMX skeleton.
+///
+/// The solver follows MMD's own evaluation model instead of a flattened
+/// parent-child walk:
+///
+/// * bones are evaluated layer by layer (`PMXBone.layer`), so a bone the
+///   author tagged as "deform after physics" never runs before its chain,
+/// * append/inherit bones read the source bone's *world* delta rather than its
+///   local rotation, which keeps shoulders, collars, skirts and hair attached
+///   while the upper body twists,
+/// * IK is a CCD pass that accumulates Euler angles, clamps them against the
+///   PMX link limits and converts the world-space correction through the
+///   *parent* rotation. Using the link's own rotation there (the previous
+///   implementation) rotated knees around a tilted axis, which is exactly the
+///   sideways leg deformation seen with IK enabled.
 final class MMDSkeleton {
 
     let boneCount: Int
     private let parentIndices: [Int]
     private let restLocal: [SIMD3<Float>]
+    /// Topological order, grouped by deform layer.
     private let order: [Int]
+    private let orderRank: [Int]
     private let inverseBind: [simd_float4x4]
     let restWorld: [simd_float4x4]
+    private let restWorldRotation: [simd_quatf]
+    private let childIndices: [[Int]]
+    /// Lazily built subtree lists. Only IK links need them, so building a full
+    /// descendant table for a 3000-bone model would waste megabytes of memory.
+    private var descendantCache: [Int: [Int]] = [:]
 
     init(model: PMXModel) {
         boneCount = model.bones.count
-        parentIndices = model.bones.map { $0.parentIndex }
+        parentIndices = model.bones.map { bone -> Int in
+            let parent = bone.parentIndex
+            return (parent >= 0 && parent < model.bones.count) ? parent : -1
+        }
         var locals = [SIMD3<Float>](repeating: .zero, count: model.bones.count)
         for (index, bone) in model.bones.enumerated() {
-            if bone.parentIndex >= 0 && bone.parentIndex < model.bones.count {
-                locals[index] = bone.position - model.bones[bone.parentIndex].position
+            let parent = parentIndices[index]
+            if parent >= 0 {
+                locals[index] = bone.position - model.bones[parent].position
             } else {
                 locals[index] = bone.position
             }
         }
         restLocal = locals
 
-        var order = [Int]()
-        order.reserveCapacity(model.bones.count)
+        var topological = [Int]()
+        topological.reserveCapacity(model.bones.count)
         var visited = [Bool](repeating: false, count: model.bones.count)
         for bone in model.bones.indices where !visited[bone] {
             var chain = [Int]()
             var cursor = bone
             var guardCount = 0
-            while cursor >= 0 && cursor < model.bones.count && !visited[cursor] && guardCount <= model.bones.count {
+            while cursor >= 0 && cursor < model.bones.count && !visited[cursor]
+                    && guardCount <= model.bones.count {
                 chain.append(cursor)
-                cursor = model.bones[cursor].parentIndex
+                cursor = parentIndices[cursor]
                 guardCount += 1
             }
             while let item = chain.popLast() {
                 if !visited[item] {
                     visited[item] = true
-                    order.append(item)
+                    topological.append(item)
                 }
             }
         }
-        self.order = order
+
+        // PMX evaluates deform layers in ascending order. Sorting the already
+        // topological list with a stable layer grouping keeps parents ahead of
+        // their children inside a layer.
+        var grouped = [Int]()
+        grouped.reserveCapacity(topological.count)
+        let highestLayer = model.bones.reduce(0) { max($0, min(8, $1.layer)) }
+        for layer in 0...max(0, highestLayer) {
+            for index in topological where model.bones[index].layer == layer {
+                grouped.append(index)
+            }
+        }
+        if grouped.count != topological.count {
+            var included = [Bool](repeating: false, count: model.bones.count)
+            for index in grouped { included[index] = true }
+            for index in topological where !included[index] { grouped.append(index) }
+        }
+        order = grouped
+
+        var ranks = [Int](repeating: 0, count: model.bones.count)
+        for (rank, index) in grouped.enumerated() { ranks[index] = rank }
+        orderRank = ranks
+
+        var children = [[Int]](repeating: [], count: model.bones.count)
+        for (index, parent) in parentIndices.enumerated() where parent >= 0 {
+            children[parent].append(index)
+        }
+        childIndices = children
 
         var worlds = [simd_float4x4](repeating: matrix_identity_float4x4, count: model.bones.count)
-        for index in order {
+        for index in grouped {
             let local = simd_float4x4.translation(locals[index])
             let parent = parentIndices[index]
             worlds[index] = (parent >= 0 ? worlds[parent] : matrix_identity_float4x4) * local
         }
         restWorld = worlds
         inverseBind = worlds.map { simd_inverse($0) }
+        restWorldRotation = worlds.map { Self.rotation(of: $0) }
     }
+
+    // MARK: - Evaluation
 
     func solve(animations: [Int: MMDBoneAnimation], model: PMXModel,
                ikEnabled: Bool = false) -> MMDSkeletonPose {
         guard boneCount > 0 else {
             return MMDSkeletonPose(worldMatrices: [], palettes: [matrix_identity_float4x4])
         }
-        guard ikEnabled else { return solveFK(animations: animations, model: model) }
-
         var working = animations
-        var pose = solveFK(animations: working, model: model)
-        for (ikBoneIndex, bone) in model.bones.enumerated() {
-            guard let ik = bone.ik, ik.targetIndex >= 0, ik.targetIndex < boneCount,
-                  !ik.links.isEmpty else { continue }
-            let iterations = max(1, min(16, ik.iterations))
-            for _ in 0..<iterations {
-                let target = pose.worldMatrices[ikBoneIndex].translation
-                let effector = pose.worldMatrices[ik.targetIndex].translation
-                if simd_distance(target, effector) < 0.0005 { break }
-                var moved = false
-                for link in ik.links {
-                    let linkIndex = link.boneIndex
-                    guard linkIndex >= 0 && linkIndex < boneCount else { continue }
-                    let pivot = pose.worldMatrices[linkIndex].translation
-                    let current = effector - pivot
-                    let desired = target - pivot
-                    let currentLength = simd_length(current)
-                    let desiredLength = simd_length(desired)
-                    guard currentLength > 0.00001, desiredLength > 0.00001 else { continue }
-                    let currentDir = current / currentLength
-                    let desiredDir = desired / desiredLength
-                    let dotValue = max(-1, min(1, simd_dot(currentDir, desiredDir)))
-                    if abs(dotValue - 1) < 0.0001 { continue }
-                    let axis: SIMD3<Float>
-                    if simd_length(simd_cross(currentDir, desiredDir)) < 0.00001 {
-                        axis = simd_normalize(simd_cross(currentDir, SIMD3<Float>(0, 1, 0)))
-                    } else {
-                        axis = simd_normalize(simd_cross(currentDir, desiredDir))
-                    }
-                    // Limit each CCD step. Applying the full correction at once
-                    // made ankles/knees snap and twist; a capped delta keeps the
-                    // solve stable at MMD's typical 2.0 rad unit angle.
-                    let stepLimit = max(0.02, min(ik.angleLimit, mmdRadians(32)))
-                    let angle = min(acos(dotValue), stepLimit)
-                    let worldAlignment = simd_quatf(angle: angle, axis: axis)
-
-                    let linkWorld = pose.worldMatrices[linkIndex]
-                    let linkQuat = quatFromRotationMatrix(simd_float3x3(
-                        SIMD3<Float>(linkWorld.columns.0.x, linkWorld.columns.0.y, linkWorld.columns.0.z),
-                        SIMD3<Float>(linkWorld.columns.1.x, linkWorld.columns.1.y, linkWorld.columns.1.z),
-                        SIMD3<Float>(linkWorld.columns.2.x, linkWorld.columns.2.y, linkWorld.columns.2.z)))
-                    // Apply the world-space correction as a delta on top of the
-                    // existing local rotation instead of overwriting the bone.
-                    // Overwriting discarded the link's own orientation, which
-                    // produced the twisted ankle seen when IK was enabled.
-                    let localDelta = linkQuat.inverse * worldAlignment * linkQuat
-                    var animation = working[linkIndex] ?? MMDBoneAnimation()
-                    var deltaEuler = quatEulerDegrees(localDelta)
-                    deltaEuler.x = max(-32, min(32, deltaEuler.x))
-                    deltaEuler.y = max(-32, min(32, deltaEuler.y))
-                    deltaEuler.z = max(-32, min(32, deltaEuler.z))
-                    let linkName = (model.bones[linkIndex].name + " "
-                                    + model.bones[linkIndex].nameEn).lowercased()
-                    if !link.hasLimit {
-                        if linkName.contains("ひざ") || linkName.contains("knee") {
-                            // Knees only flex; letting the CCD add twist or sideways
-                            // rotation is what folded the leg during crouches.
-                            deltaEuler.y = 0
-                            deltaEuler.z = 0
-                            deltaEuler.x = max(-60, min(60, deltaEuler.x))
-                        } else if linkName.contains("足首") || linkName.contains("ankle") {
-                            deltaEuler.y = max(-8, min(8, deltaEuler.y))
-                            deltaEuler.z = max(-8, min(8, deltaEuler.z))
-                        }
-                    }
-                    let clampedDelta = quatFromEuler(SIMD3<Float>(mmdRadians(deltaEuler.x),
-                                                                  mmdRadians(deltaEuler.y),
-                                                                  mmdRadians(deltaEuler.z)))
-                    // PMX IK links carry the author's own lower/upper limits.
-                    // They were parsed but never used, so knees and elbows could
-                    // bend past what the model was rigged for.
-                    animation.rotation = link.hasLimit
-                        ? Self.clampingToLinkLimits(clampedDelta * animation.rotation, link: link)
-                        : clampedDelta * animation.rotation
-                    working[linkIndex] = animation
-                    pose = solveFK(animations: working, model: model)
-                    moved = true
-                }
-                if !moved { break }
-            }
-        }
-        return pose
-    }
-
-    /// Clamps a bone's local rotation to a PMX IK link's limits. PMX stores the
-    /// limits as XYZ euler angles in radians; the solver works in degrees, so
-    /// convert in both directions and only rebuild the quaternion when the
-    /// clamp actually moved something.
-    private static func clampingToLinkLimits(_ rotation: simd_quatf, link: PMXIKLink) -> simd_quatf {
-        let factor: Float = 57.29578
-        let degrees = quatEulerDegrees(rotation)
-        let lower = link.lowerLimit * factor
-        let upper = link.upperLimit * factor
-        var clamped = degrees
-        clamped.x = min(max(degrees.x, min(lower.x, upper.x)), max(lower.x, upper.x))
-        clamped.y = min(max(degrees.y, min(lower.y, upper.y)), max(lower.y, upper.y))
-        clamped.z = min(max(degrees.z, min(lower.z, upper.z)), max(lower.z, upper.z))
-        guard simd_length(clamped - degrees) > 0.0001 else { return rotation }
-        return quatFromEuler(SIMD3<Float>(mmdRadians(clamped.x), mmdRadians(clamped.y), mmdRadians(clamped.z)))
-    }
-
-    private func solveFK(animations: [Int: MMDBoneAnimation], model: PMXModel) -> MMDSkeletonPose {
         var worlds = [simd_float4x4](repeating: matrix_identity_float4x4, count: boneCount)
         for index in order {
-            let bone = model.bones[index]
-            let animation = animations[index] ?? MMDBoneAnimation()
-            var localTranslation = restLocal[index] + animation.position
-            var localRotation = animation.rotation
-
-            if bone.appendParent >= 0 && bone.appendParent < boneCount && abs(bone.appendRatio) > 0.0001 {
-                let append = animations[bone.appendParent] ?? MMDBoneAnimation()
-                let ratio = bone.appendRatio
-                let extraRotation = quatSlerp(mmdIdentityQuaternion, append.rotation, ratio)
-                localRotation = localRotation * extraRotation
-                if bone.inheritsTranslation {
-                    localTranslation += append.position * ratio
-                }
-            }
-
-            let local = simd_float4x4.translation(localTranslation) * simd_float4x4(quaternion: localRotation)
-            let parent = parentIndices[index]
-            worlds[index] = (parent >= 0 ? worlds[parent] : matrix_identity_float4x4) * local
+            update(index, animations: working, model: model, worlds: &worlds)
         }
-
+        if ikEnabled {
+            solveIK(animations: &working, model: model, worlds: &worlds)
+        }
         var palettes = [simd_float4x4](repeating: matrix_identity_float4x4, count: boneCount)
         for index in 0..<boneCount {
             palettes[index] = worlds[index] * inverseBind[index]
         }
         return MMDSkeletonPose(worldMatrices: worlds, palettes: palettes)
+    }
+
+    /// Evaluates a single bone and writes its world matrix. `worlds` must hold
+    /// valid parents at the time of the call; every caller walks `order`.
+    @inline(__always)
+    private func update(_ index: Int, animations: [Int: MMDBoneAnimation],
+                        model: PMXModel, worlds: inout [simd_float4x4]) {
+        let bone = model.bones[index]
+        let animation = animations[index] ?? MMDBoneAnimation()
+        var translation = restLocal[index] + animation.position
+        var rotation = animation.rotation
+
+        // Fixed-axis bones may only spin around their authored axis. Applying
+        // the full rotation bends elbows and wrists out of their hinge.
+        if let axis = bone.fixedAxis, simd_length(axis) > 0.0001, bone.isRotatable {
+            rotation = Self.projected(rotation, onto: axis.unit)
+        }
+
+        let appendParent = bone.appendParent
+        if appendParent >= 0 && appendParent < boneCount && abs(bone.appendRatio) > 0.0001 {
+            let ratio = bone.appendRatio
+            if bone.inheritsRotation {
+                let source: simd_quatf
+                if bone.isLocalAppend {
+                    source = (animations[appendParent] ?? MMDBoneAnimation()).rotation
+                } else {
+                    let current = Self.rotation(of: worlds[appendParent])
+                    source = current * restWorldRotation[appendParent].inverse
+                }
+                let extra = quatSlerp(mmdIdentityQuaternion, source,
+                                      max(-1.5, min(1.5, ratio)))
+                rotation = quatNormalize(rotation * extra)
+            }
+            if bone.inheritsTranslation {
+                let worldDelta = worlds[appendParent].translation - restWorld[appendParent].translation
+                let parent = parentIndices[index]
+                if parent >= 0 {
+                    let parentRotation = Self.rotation(of: worlds[parent])
+                    translation += parentRotation.inverse.act(worldDelta * ratio)
+                } else {
+                    translation += worldDelta * ratio
+                }
+            }
+        }
+
+        let local = simd_float4x4.translation(translation) * simd_float4x4(quaternion: rotation)
+        let parent = parentIndices[index]
+        worlds[index] = (parent >= 0 ? worlds[parent] : matrix_identity_float4x4) * local
+    }
+
+    /// Re-evaluates `index` plus every descendant, in topological order.
+    private func refreshSubtree(_ index: Int, animations: [Int: MMDBoneAnimation],
+                               model: PMXModel, worlds: inout [simd_float4x4]) {
+        update(index, animations: animations, model: model, worlds: &worlds)
+        for descendant in descendants(of: index) {
+            update(descendant, animations: animations, model: model, worlds: &worlds)
+        }
+    }
+
+    private func descendants(of index: Int) -> [Int] {
+        if let cached = descendantCache[index] { return cached }
+        var result = [Int]()
+        var stack = childIndices[index]
+        while let item = stack.popLast() {
+            result.append(item)
+            stack.append(contentsOf: childIndices[item])
+        }
+        result.sort { orderRank[$0] < orderRank[$1] }
+        descendantCache[index] = result
+        return result
+    }
+
+    // MARK: - IK
+
+    private func solveIK(animations: inout [Int: MMDBoneAnimation], model: PMXModel,
+                         worlds: inout [simd_float4x4]) {
+        // Hard ceiling so a pathological file (hundreds of IK chains, 255
+        // iterations each) cannot stall the render thread.
+        var budget = 120_000
+
+        for (ikIndex, bone) in model.bones.enumerated() {
+            guard let ik = bone.ik, ik.targetIndex >= 0, ik.targetIndex < boneCount,
+                  !ik.links.isEmpty else { continue }
+            guard budget > 0 else { break }
+
+            let iterations = max(1, min(24, ik.iterations))
+            let stepLimit = max(0.15, min(1.2, ik.angleLimit > 0 ? ik.angleLimit : 1.0))
+
+            // Euler state per link, in degrees. MMD limits are authored as
+            // Euler angles, so accumulating quaternions and only clamping at
+            // the end would ignore the limits entirely.
+            var euler = [SIMD3<Float>]()
+            euler.reserveCapacity(ik.links.count)
+            for link in ik.links {
+                let quaternion = (animations[link.boneIndex] ?? MMDBoneAnimation()).rotation
+                euler.append(quatEulerDegrees(quaternion))
+            }
+
+            for _ in 0..<iterations {
+                let target = worlds[ikIndex].translation
+                if simd_distance(target, worlds[ik.targetIndex].translation) < 0.0002 { break }
+
+                for (slot, link) in ik.links.enumerated() {
+                    let linkIndex = link.boneIndex
+                    guard linkIndex >= 0 && linkIndex < boneCount else { continue }
+
+                    let pivot = worlds[linkIndex].translation
+                    let targetPosition = worlds[ikIndex].translation
+                    let effector = worlds[ik.targetIndex].translation
+                    let current = effector - pivot
+                    let desired = targetPosition - pivot
+                    let currentLength = simd_length(current)
+                    let desiredLength = simd_length(desired)
+                    guard currentLength > 0.00001, desiredLength > 0.00001 else { continue }
+
+                    let cosine = max(-1, min(1, simd_dot(current / currentLength,
+                                                         desired / desiredLength)))
+                    let angle = acosf(cosine)
+                    guard angle > 0.00005 else { continue }
+
+                    let cross = simd_cross(current, desired)
+                    var axis = simd_length(cross) > 0.000001
+                        ? cross / simd_length(cross)
+                        : SIMD3<Float>(1, 0, 0)
+                    if simd_length(cross) <= 0.000001 {
+                        // Fully folded: pick a stable perpendicular so the
+                        // chain does not collapse onto itself.
+                        let fallback = abs(current.z) < 0.9 ? SIMD3<Float>(0, 0, 1)
+                                                           : SIMD3<Float>(1, 0, 0)
+                        let alt = simd_cross(current, fallback)
+                        if simd_length(alt) > 0.000001 { axis = alt / simd_length(alt) }
+                    }
+
+                    let step = min(angle, stepLimit)
+                    let worldDelta = simd_quatf(angle: step, axis: axis)
+
+                    // A bone's local rotation lives in its parent's space, so
+                    // the world correction has to be conjugated by the parent
+                    // rotation — not by the link's own rotation.
+                    let parent = parentIndices[linkIndex]
+                    let parentRotation = parent >= 0 ? Self.rotation(of: worlds[parent])
+                                                     : mmdIdentityQuaternion
+                    let localDelta = parentRotation.inverse * worldDelta * parentRotation
+
+                    let currentQuaternion = quatFromEuler(SIMD3<Float>(
+                        mmdRadians(euler[slot].x),
+                        mmdRadians(euler[slot].y),
+                        mmdRadians(euler[slot].z)))
+                    var updated = quatNormalize(localDelta * currentQuaternion)
+                    var angles = quatEulerDegrees(updated)
+
+                    if link.hasLimit {
+                        angles = Self.clamped(angles, lower: link.lowerLimit, upper: link.upperLimit)
+                    } else if Self.isKnee(linkIndex, model: model) {
+                        // A knee is a hinge. Any Y/Z rotation added by CCD
+                        // folds the calf sideways; the small positive window
+                        // keeps a locked leg from snapping over-centre.
+                        angles.y = 0
+                        angles.z = 0
+                        angles.x = max(-165, min(8, angles.x))
+                    } else if Self.isAnkle(linkIndex, model: model) {
+                        angles.y = max(-25, min(25, angles.y))
+                        angles.z = max(-25, min(25, angles.z))
+                    } else {
+                        angles.x = max(-170, min(170, angles.x))
+                        angles.y = max(-170, min(170, angles.y))
+                        angles.z = max(-170, min(170, angles.z))
+                    }
+
+                    euler[slot] = angles
+                    updated = quatFromEuler(SIMD3<Float>(mmdRadians(angles.x),
+                                                         mmdRadians(angles.y),
+                                                         mmdRadians(angles.z)))
+                    var animation = animations[linkIndex] ?? MMDBoneAnimation()
+                    animation.rotation = updated
+                    animations[linkIndex] = animation
+                    refreshSubtree(linkIndex, animations: animations, model: model, worlds: &worlds)
+
+                    budget -= descendants(of: linkIndex).count + 1
+                    if budget <= 0 { return }
+                }
+            }
+        }
+    }
+
+    private static func clamped(_ degrees: SIMD3<Float>,
+                                lower: SIMD3<Float>, upper: SIMD3<Float>) -> SIMD3<Float> {
+        let factor: Float = 57.29578
+        let low = SIMD3<Float>(min(lower.x, upper.x), min(lower.y, upper.y), min(lower.z, upper.z)) * factor
+        let high = SIMD3<Float>(max(lower.x, upper.x), max(lower.y, upper.y), max(lower.z, upper.z)) * factor
+        return SIMD3<Float>(min(max(degrees.x, low.x), high.x),
+                            min(max(degrees.y, low.y), high.y),
+                            min(max(degrees.z, low.z), high.z))
+    }
+
+    private static func isKnee(_ index: Int, model: PMXModel) -> Bool {
+        guard index >= 0 && index < model.bones.count else { return false }
+        let name = (model.bones[index].name + " " + model.bones[index].nameEn).lowercased()
+        return name.contains("ひざ") || name.contains("knee")
+    }
+
+    private static func isAnkle(_ index: Int, model: PMXModel) -> Bool {
+        guard index >= 0 && index < model.bones.count else { return false }
+        let name = (model.bones[index].name + " " + model.bones[index].nameEn).lowercased()
+        return name.contains("足首") || name.contains("ankle")
+    }
+
+    private static func rotation(of matrix: simd_float4x4) -> simd_quatf {
+        quatFromRotationMatrix(matrix.rotationMatrix)
+    }
+
+    private static func projected(_ quaternion: simd_quatf, onto axis: SIMD3<Float>) -> simd_quatf {
+        let angle = quaternion.angle
+        guard angle.isFinite, angle > 0.0001 else { return mmdIdentityQuaternion }
+        let alignment = simd_dot(quaternion.axis, axis)
+        let projectedAngle = angle * alignment
+        return simd_quatf(angle: projectedAngle, axis: axis)
     }
 
     func boneWorldPositions(_ pose: MMDSkeletonPose) -> [SIMD3<Float>] {

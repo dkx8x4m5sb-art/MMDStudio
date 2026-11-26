@@ -18,6 +18,10 @@ final class MMDMesh {
     let boneIndicesBuffer: MTLBuffer
     let weightsBuffer: MTLBuffer
     let edgeScalesBuffer: MTLBuffer
+    /// Three float4 per vertex: (C, isSDEF), R0, R1. Uploaded for every model
+    /// so the vertex shader can branch on a single flag without a second
+    /// pipeline state.
+    let sdefBuffer: MTLBuffer
     let indexBuffer: MTLBuffer
     var subMeshes: [MMDSubMesh]
     var bounds: MMDBox
@@ -30,6 +34,7 @@ final class MMDMesh {
          boneIndicesBuffer: MTLBuffer,
          weightsBuffer: MTLBuffer,
          edgeScalesBuffer: MTLBuffer,
+         sdefBuffer: MTLBuffer,
          indexBuffer: MTLBuffer,
          subMeshes: [MMDSubMesh],
          bounds: MMDBox,
@@ -41,6 +46,7 @@ final class MMDMesh {
         self.boneIndicesBuffer = boneIndicesBuffer
         self.weightsBuffer = weightsBuffer
         self.edgeScalesBuffer = edgeScalesBuffer
+        self.sdefBuffer = sdefBuffer
         self.indexBuffer = indexBuffer
         self.subMeshes = subMeshes
         self.bounds = bounds
@@ -109,12 +115,22 @@ final class MMDMeshBuilder {
         }
         let edgeScales = model.vertices.map { $0.edgeScale }
 
+        var sdef = [SIMD4<Float>]()
+        sdef.reserveCapacity(count * 3)
+        for vertex in model.vertices {
+            let flag: Float = vertex.isSDEF ? 1 : 0
+            sdef.append(SIMD4<Float>(vertex.sdefCenter, flag))
+            sdef.append(SIMD4<Float>(vertex.sdefRadius0, 0))
+            sdef.append(SIMD4<Float>(vertex.sdefRadius1, 0))
+        }
+
         let positionsBuffer = try makeBuffer(positions, label: "positions")
         let normalsBuffer = try makeBuffer(normals, label: "normals")
         let uvsBuffer = try makeBuffer(uvs, label: "uvs")
         let boneIndicesBuffer = try makeBuffer(boneIndices, label: "boneIndices")
         let weightsBuffer = try makeBuffer(weights, label: "weights")
         let edgeScalesBuffer = try makeBuffer(edgeScales, label: "edgeScales")
+        let sdefBuffer = try makeBuffer(sdef, label: "sdef")
 
         guard !model.indices.isEmpty else {
             throw MMDLoadError.invalidData("模型没有面数据")
@@ -178,6 +194,7 @@ final class MMDMeshBuilder {
                        boneIndicesBuffer: boneIndicesBuffer,
                        weightsBuffer: weightsBuffer,
                        edgeScalesBuffer: edgeScalesBuffer,
+                       sdefBuffer: sdefBuffer,
                        indexBuffer: indexBuffer,
                        subMeshes: subMeshes,
                        bounds: bounds,

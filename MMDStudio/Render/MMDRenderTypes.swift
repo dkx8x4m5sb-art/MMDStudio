@@ -27,6 +27,9 @@ struct MMDSceneUniforms {
     var worldParams: SIMD4<Float> = SIMD4<Float>(0.18, 0.32, 0, 0)
     var worldSkyColor: SIMD4<Float> = SIMD4<Float>(0.48, 0.62, 0.82, 1)
     var worldGroundColor: SIMD4<Float> = SIMD4<Float>(0.18, 0.14, 0.12, 1)
+    /// x: outline width in pixels, y: specular strength, z: skin scatter,
+    /// w: shadow hue shift.
+    var renderParams: SIMD4<Float> = SIMD4<Float>(1.6, 0.55, 0.35, 0.35)
     var lights: (MMDLightUniform, MMDLightUniform, MMDLightUniform, MMDLightUniform,
                  MMDLightUniform, MMDLightUniform, MMDLightUniform, MMDLightUniform) = MMDLightUniform.defaultTuple
 }
@@ -76,6 +79,9 @@ struct MMDMaterialUniforms {
     var textureTint: SIMD4<Float> = SIMD4<Float>(1, 1, 1, 1)
     var sphereTint: SIMD4<Float> = SIMD4<Float>(0, 0, 0, 1)
     var toonTint: SIMD4<Float> = SIMD4<Float>(1, 1, 1, 1)
+    /// x: specular strength multiplier, y: metalness, z: skin flag (1 = skin),
+    /// w: outline width multiplier.
+    var toonControl: SIMD4<Float> = SIMD4<Float>(1, 0, 0, 1)
     var edgeSize: Float = 1
     var alphaTest: Float = 0.03
     var sphereMode: Int32 = 0
@@ -484,6 +490,13 @@ struct MMDRenderSettings {
     var toonShadowLift: Float = 0.66
     var toonRim: Float = 0.18
     var toonShadowTint: SIMD4<Float> = SIMD4<Float>(0.60, 0.57, 0.66, 0.60)
+    /// Screen-space outline thickness in pixels. Unlike a world-space shell this
+    /// keeps the line weight identical at every camera distance.
+    var outlineWidth: Float = 1.6
+    /// Ladder highlight strength for the cel shader.
+    var specularStrength: Float = 0.55
+    /// Warm light bleeding at the terminator, used by skin and thin cloth.
+    var skinScatter: Float = 0.35
     var toonEnabled: Bool = true
     var renderMode: MMDRenderMode = .toon
     var style: MMDRenderStyle = .mmd

@@ -311,6 +311,9 @@ final class PMXParser {
             let weightType = try reader.readUInt8("顶点权重类型")
             var boneIndices = SIMD4<UInt32>(0, 0, 0, 0)
             var boneWeights = SIMD4<Float>(1, 0, 0, 0)
+            var sdefCenter = SIMD3<Float>.zero
+            var sdefRadius0 = SIMD3<Float>.zero
+            var sdefRadius1 = SIMD3<Float>.zero
 
             switch weightType {
             case 0: // BDEF1
@@ -335,13 +338,21 @@ final class PMXParser {
                 }
                 boneIndices = indices
                 boneWeights = weights
-            case 3: // SDEF, rendered as BDEF2 for now
+            case 3: // SDEF: spherical deformation, authored for skirts, cuffs and chest
                 let bone1 = try reader.readIndex(size: boneIndexSize, signed: true, "骨骼索引")
                 let bone2 = try reader.readIndex(size: boneIndexSize, signed: true, "骨骼索引")
                 let weight = try reader.readFloat("骨骼权重")
-                _ = try reader.readVector3("SDEF C")
-                _ = try reader.readVector3("SDEF R0")
-                _ = try reader.readVector3("SDEF R1")
+                var center = try reader.readVector3("SDEF C")
+                var radius0 = try reader.readVector3("SDEF R0")
+                var radius1 = try reader.readVector3("SDEF R1")
+                // SDEF data lives in the same left-handed model space as the
+                // vertices, so it needs the identical Z mirror.
+                center.z = -center.z
+                radius0.z = -radius0.z
+                radius1.z = -radius1.z
+                sdefCenter = center
+                sdefRadius0 = radius0
+                sdefRadius1 = radius1
                 boneIndices = SIMD4<UInt32>(UInt32(max(0, bone1)), UInt32(max(0, bone2)), 0, 0)
                 boneWeights = SIMD4<Float>(weight, 1 - weight, 0, 0)
             default:
@@ -351,7 +362,10 @@ final class PMXParser {
             let edgeScale = try reader.readFloat("边缘倍率")
             vertices.append(PMXVertex(position: position, normal: normal, uv: uv,
                                      boneIndices: boneIndices, boneWeights: boneWeights,
-                                     edgeScale: edgeScale))
+                                     edgeScale: edgeScale, skinType: weightType,
+                                     sdefCenter: sdefCenter,
+                                     sdefRadius0: sdefRadius0,
+                                     sdefRadius1: sdefRadius1))
         }
         return vertices
     }
@@ -478,14 +492,20 @@ final class PMXParser {
 
             var fixedAxis: SIMD3<Float>?
             if flags & 0x0400 != 0 {
-                fixedAxis = try reader.readVector3("固定轴")
+                var axis = try reader.readVector3("固定轴")
+                axis.z = -axis.z
+                if simd_length(axis) > 0.0001 { fixedAxis = simd_normalize(axis) }
             }
 
             var localAxisX: SIMD3<Float>?
             var localAxisZ: SIMD3<Float>?
             if flags & 0x0800 != 0 {
-                localAxisX = try reader.readVector3("局部 X 轴")
-                localAxisZ = try reader.readVector3("局部 Z 轴")
+                var axisX = try reader.readVector3("局部 X 轴")
+                var axisZ = try reader.readVector3("局部 Z 轴")
+                axisX.z = -axisX.z
+                axisZ.z = -axisZ.z
+                localAxisX = axisX
+                localAxisZ = axisZ
             }
 
             if flags & 0x2000 != 0 {
@@ -510,11 +530,29 @@ final class PMXParser {
                     let hasLimit = try reader.readUInt8("IK 角度限制标志")
                     var lower = SIMD3<Float>.zero
                     var upper = SIMD3<Float>.zero
-                    if hasLimit != 0 {
+                    var limitEnabled = hasLimit != 0
+                    if limitEnabled {
                         lower = try reader.readVector3("IK 角度下限")
                         upper = try reader.readVector3("IK 角度上限")
+                        // The whole model is mirrored on Z, and a mirror turns a
+                        // rotation about X/Y into its negative. Limits were kept
+                        // in the original handedness, so a knee authored as
+                        // "bend backwards only" ended up clamping the solver to
+                        // the opposite direction and the leg folded forwards.
+                        let lowX = min(-lower.x, -upper.x)
+                        let highX = max(-lower.x, -upper.x)
+                        let lowY = min(-lower.y, -upper.y)
+                        let highY = max(-lower.y, -upper.y)
+                        let lowZ = min(lower.z, upper.z)
+                        let highZ = max(lower.z, upper.z)
+                        lower = SIMD3<Float>(lowX, lowY, lowZ)
+                        upper = SIMD3<Float>(highX, highY, highZ)
+                        // A limit of exactly zero locks the bone completely.
+                        // Some converters write the flag with an empty range,
+                        // which used to freeze the whole leg chain.
+                        if simd_length(upper - lower) < 0.0005 { limitEnabled = false }
                     }
-                    links.append(PMXIKLink(boneIndex: linkIndex, hasLimit: hasLimit != 0,
+                    links.append(PMXIKLink(boneIndex: linkIndex, hasLimit: limitEnabled,
                                            lowerLimit: lower, upperLimit: upper))
                 }
                 ik = PMXIK(targetIndex: target, iterations: max(1, iterations),

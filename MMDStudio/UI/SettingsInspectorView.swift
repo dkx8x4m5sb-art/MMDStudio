@@ -944,8 +944,23 @@ struct RenderStudioView: View {
                         Text(String(format: "%.2f", document.renderSettings.toonRim)).captionValue()
                     }
                     ColorPicker("阴影色调 / 强度", selection: shadowTintBinding, supportsOpacity: true)
+                    HStack {
+                        Text("高光强度")
+                        Slider(value: bind(\.specularStrength), in: 0...1.5)
+                        Text(String(format: "%.2f", document.renderSettings.specularStrength)).captionValue()
+                    }
+                    HStack {
+                        Text("皮肤透光")
+                        Slider(value: bind(\.skinScatter), in: 0...1)
+                        Text(String(format: "%.2f", document.renderSettings.skinScatter)).captionValue()
+                    }
                     Toggle("启用卡通渐变", isOn: $document.renderSettings.toonEnabled)
                     Toggle("启用反壳描边", isOn: $document.renderSettings.edgesEnabled)
+                    HStack {
+                        Text("描边像素宽")
+                        Slider(value: bind(\.outlineWidth), in: 0.4...4.0)
+                        Text(String(format: "%.1f px", document.renderSettings.outlineWidth)).captionValue()
+                    }
                     HStack {
                         Text("描边粗细")
                         Slider(value: edgeBinding, in: 0...3)
