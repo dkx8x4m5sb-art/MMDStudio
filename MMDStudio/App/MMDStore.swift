@@ -496,8 +496,11 @@ final class MMDStore: ObservableObject {
                 }
                 let label = propLabel(for: entry, character: owner, all: input)
                 result[index].ownerName = owner.displayName
-                if !label.isEmpty, !owner.displayName.hasSuffix(label) {
-                    result[index].displayName = "\(owner.displayName)-\(label)"
+                // "菲欧妮皮肤" + "武器" reads badly; the folder keeps the full
+                // name, the row uses the short one: 菲欧妮-武器.
+                let prefix = shortCharacterName(owner.displayName)
+                if !label.isEmpty, !prefix.hasSuffix(label) {
+                    result[index].displayName = "\(prefix)-\(label)"
                 }
             }
         }
@@ -544,6 +547,14 @@ final class MMDStore: ObservableObject {
         return biggest.map { all[$0] }
     }
 
+    private static func shortCharacterName(_ name: String) -> String {
+        var value = name
+        for suffix in ["皮肤", "模型", "本体", "角色", "（正常版）", "(正常版)"] where value.hasSuffix(suffix) {
+            value = String(value.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces)
+        }
+        return value.isEmpty ? name : value
+    }
+
     private static func propLabel(for entry: MMDModelEntry,
                                   character: MMDModelEntry,
                                   all: [MMDModelEntry]) -> String {
@@ -552,7 +563,8 @@ final class MMDStore: ObservableObject {
            let repaired = MMDZipArchive.repairedFilename(stem) {
             stem = repaired
         }
-        for token in [character.displayName, entry.folderName, entry.packageURL.lastPathComponent]
+        for token in [character.displayName, shortCharacterName(character.displayName),
+                      entry.folderName, entry.packageURL.lastPathComponent]
         where token.count >= 2 {
             if stem.lowercased().hasPrefix(token.lowercased()) {
                 stem = String(stem.dropFirst(token.count))
