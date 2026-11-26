@@ -13,30 +13,24 @@ struct MMDSkeletonPose {
 
 /// Computes skinning matrices for the PMX skeleton.
 ///
-/// The solver follows MMD's own evaluation model instead of a flattened
-/// parent-child walk:
+/// Skinning matrices come from a plain topological walk (parent strictly
+/// before child), which is the only ordering that is safe for every PMX file.
+/// Append/inherit reads the source bone's *local* pose, matching MMD.
 ///
-/// * bones are evaluated layer by layer (`PMXBone.layer`), so a bone the
-///   author tagged as "deform after physics" never runs before its chain,
-/// * append/inherit bones read the source bone's *world* delta rather than its
-///   local rotation, which keeps shoulders, collars, skirts and hair attached
-///   while the upper body twists,
-/// * IK is a CCD pass that accumulates Euler angles, clamps them against the
-///   PMX link limits and converts the world-space correction through the
-///   *parent* rotation. Using the link's own rotation there (the previous
-///   implementation) rotated knees around a tilted axis, which is exactly the
-///   sideways leg deformation seen with IK enabled.
+/// IK is a CCD pass that accumulates Euler angles, clamps them against the
+/// PMX link limits and converts the world-space correction through the
+/// *parent* rotation. Using the link's own rotation there rotated knees around
+/// a tilted axis, which is the sideways leg deformation seen with IK on.
 final class MMDSkeleton {
 
     let boneCount: Int
     private let parentIndices: [Int]
     private let restLocal: [SIMD3<Float>]
-    /// Topological order, grouped by deform layer.
+    /// Strict topological order: every parent precedes its children.
     private let order: [Int]
     private let orderRank: [Int]
     private let inverseBind: [simd_float4x4]
     let restWorld: [simd_float4x4]
-    private let restWorldRotation: [simd_quatf]
     private let childIndices: [[Int]]
     /// Lazily built subtree lists. Only IK links need them, so building a full
     /// descendant table for a 3000-bone model would waste megabytes of memory.
@@ -80,26 +74,15 @@ final class MMDSkeleton {
             }
         }
 
-        // PMX evaluates deform layers in ascending order. Sorting the already
-        // topological list with a stable layer grouping keeps parents ahead of
-        // their children inside a layer.
-        var grouped = [Int]()
-        grouped.reserveCapacity(topological.count)
-        let highestLayer = model.bones.reduce(0) { max($0, min(8, $1.layer)) }
-        for layer in 0...max(0, highestLayer) {
-            for index in topological where model.bones[index].layer == layer {
-                grouped.append(index)
-            }
-        }
-        if grouped.count != topological.count {
-            var included = [Bool](repeating: false, count: model.bones.count)
-            for index in grouped { included[index] = true }
-            for index in topological where !included[index] { grouped.append(index) }
-        }
-        order = grouped
+        // Pure topological order. Grouping by PMX deform layer looks closer to
+        // MMD on paper, but a child authored on layer 0 with a parent on
+        // layer 1 is legal, and hoisting layer 0 broke the parent-before-child
+        // guarantee: the child then read an identity world matrix and whole
+        // limbs snapped to the origin. Correctness beats the layer nuance.
+        order = topological
 
         var ranks = [Int](repeating: 0, count: model.bones.count)
-        for (rank, index) in grouped.enumerated() { ranks[index] = rank }
+        for (rank, index) in topological.enumerated() { ranks[index] = rank }
         orderRank = ranks
 
         var children = [[Int]](repeating: [], count: model.bones.count)
@@ -109,14 +92,13 @@ final class MMDSkeleton {
         childIndices = children
 
         var worlds = [simd_float4x4](repeating: matrix_identity_float4x4, count: model.bones.count)
-        for index in grouped {
+        for index in topological {
             let local = simd_float4x4.translation(locals[index])
             let parent = parentIndices[index]
             worlds[index] = (parent >= 0 ? worlds[parent] : matrix_identity_float4x4) * local
         }
         restWorld = worlds
         inverseBind = worlds.map { simd_inverse($0) }
-        restWorldRotation = worlds.map { Self.rotation(of: $0) }
     }
 
     // MARK: - Evaluation
@@ -151,36 +133,19 @@ final class MMDSkeleton {
         var translation = restLocal[index] + animation.position
         var rotation = animation.rotation
 
-        // Fixed-axis bones may only spin around their authored axis. Applying
-        // the full rotation bends elbows and wrists out of their hinge.
-        if let axis = bone.fixedAxis, simd_length(axis) > 0.0001, bone.isRotatable {
-            rotation = Self.projected(rotation, onto: axis.unit)
-        }
-
         let appendParent = bone.appendParent
         if appendParent >= 0 && appendParent < boneCount && abs(bone.appendRatio) > 0.0001 {
             let ratio = bone.appendRatio
-            if bone.inheritsRotation {
-                let source: simd_quatf
-                if bone.isLocalAppend {
-                    source = (animations[appendParent] ?? MMDBoneAnimation()).rotation
-                } else {
-                    let current = Self.rotation(of: worlds[appendParent])
-                    source = current * restWorldRotation[appendParent].inverse
-                }
-                let extra = quatSlerp(mmdIdentityQuaternion, source,
-                                      max(-1.5, min(1.5, ratio)))
-                rotation = quatNormalize(rotation * extra)
-            }
+            let append = animations[appendParent] ?? MMDBoneAnimation()
+            // Append/inherit is defined on the source bone's *local* pose in
+            // MMD. Reading its world delta made the result depend on whether
+            // the source happened to be evaluated earlier in the frame, which
+            // reshuffled entire chains and detached skirts, collars and hair.
+            let extra = quatSlerp(mmdIdentityQuaternion, append.rotation,
+                                  max(-1.5, min(1.5, ratio)))
+            rotation = quatNormalize(rotation * extra)
             if bone.inheritsTranslation {
-                let worldDelta = worlds[appendParent].translation - restWorld[appendParent].translation
-                let parent = parentIndices[index]
-                if parent >= 0 {
-                    let parentRotation = Self.rotation(of: worlds[parent])
-                    translation += parentRotation.inverse.act(worldDelta * ratio)
-                } else {
-                    translation += worldDelta * ratio
-                }
+                translation += append.position * ratio
             }
         }
 
@@ -354,14 +319,6 @@ final class MMDSkeleton {
 
     private static func rotation(of matrix: simd_float4x4) -> simd_quatf {
         quatFromRotationMatrix(matrix.rotationMatrix)
-    }
-
-    private static func projected(_ quaternion: simd_quatf, onto axis: SIMD3<Float>) -> simd_quatf {
-        let angle = quaternion.angle
-        guard angle.isFinite, angle > 0.0001 else { return mmdIdentityQuaternion }
-        let alignment = simd_dot(quaternion.axis, axis)
-        let projectedAngle = angle * alignment
-        return simd_quatf(angle: projectedAngle, axis: axis)
     }
 
     func boneWorldPositions(_ pose: MMDSkeletonPose) -> [SIMD3<Float>] {

@@ -673,9 +673,14 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             encoder.setDepthBias(0.0006, slopeScale: 1.2, clamp: 0)
             bindMeshBuffers(encoder, mesh: mesh)
             setScene(scene, encoder: encoder, vertexIndex: 6)
+            // The outline shader declares palette at slot 8 and the SDEF
+            // stream at 9, the mirror of the body pass. bindMeshBuffers puts
+            // SDEF in 8, so both slots have to be re-pointed or the hull reads
+            // skinning metadata as 4x4 bone matrices and explodes.
             if let paletteBuffer = updatePaletteBuffer(pose.palettes) {
-                encoder.setVertexBuffer(paletteBuffer, offset: 0, index: 9)
+                encoder.setVertexBuffer(paletteBuffer, offset: 0, index: 8)
             }
+            encoder.setVertexBuffer(mesh.sdefBuffer, offset: 0, index: 9)
             encoder.setCullMode(.front)
             for submesh in mesh.subMeshes {
                 let materialIndex = submesh.materialIndex
@@ -1675,9 +1680,14 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             encoder.setDepthBias(0.0006, slopeScale: 1.2, clamp: 0)
             bindMeshBuffers(encoder, mesh: mesh)
             setScene(scene, encoder: encoder, vertexIndex: 6)
+            // The outline shader declares palette at slot 8 and the SDEF
+            // stream at 9, the mirror of the body pass. bindMeshBuffers puts
+            // SDEF in 8, so both slots have to be re-pointed or the hull reads
+            // skinning metadata as 4x4 bone matrices and explodes.
             if let paletteBuffer = updatePaletteBuffer(pose.palettes) {
-                encoder.setVertexBuffer(paletteBuffer, offset: 0, index: 9)
+                encoder.setVertexBuffer(paletteBuffer, offset: 0, index: 8)
             }
+            encoder.setVertexBuffer(mesh.sdefBuffer, offset: 0, index: 9)
             encoder.setCullMode(.front)
             for submesh in mesh.subMeshes {
                 let materialIndex = submesh.materialIndex

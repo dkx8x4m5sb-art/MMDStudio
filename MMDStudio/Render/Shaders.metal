@@ -85,10 +85,21 @@ static inline float4 mmdSkinPosition(uint vid,
         // and cuffs into the body while the legs moved.
         float4 r0 = sdef[vid * 3 + 1];
         float4 r1 = sdef[vid * 3 + 2];
-        float3 local = position - center.xyz;
-        float3 p0 = (palette[bi.x] * float4(local + r0.xyz, 1.0)).xyz;
-        float3 p1 = (palette[bi.y] * float4(local + r1.xyz, 1.0)).xyz;
-        return float4(w.x * p0 + w.y * p1, 1.0);
+        // SDEF deforms the vertex on a sphere centred at C. The previous
+        // version transformed `v - C` with a matrix that still carries the
+        // bone translation, so at rest the whole patch slid by -C (tens of
+        // centimetres) and skirts, cuffs and chest caved into the body.
+        //
+        // Weight the sphere's centre and a pure rotation, then rotate the
+        // offset. At rest (all palettes identity) this reduces to exactly v.
+        float4x4 m0 = palette[bi.x];
+        float4x4 m1 = palette[bi.y];
+        float3 center0 = (m0 * float4(center.xyz + r0.xyz, 1.0)).xyz;
+        float3 center1 = (m1 * float4(center.xyz + r1.xyz, 1.0)).xyz;
+        float3 sphereCenter = w.x * center0 + w.y * center1;
+        float3x3 rotation = w.x * float3x3(m0) + w.y * float3x3(m1);
+        float3 offset = position - center.xyz - (w.x * r0.xyz + w.y * r1.xyz);
+        return float4(sphereCenter + rotation * offset, 1.0);
     }
     return w.x * (palette[bi.x] * float4(position, 1.0))
          + w.y * (palette[bi.y] * float4(position, 1.0))
