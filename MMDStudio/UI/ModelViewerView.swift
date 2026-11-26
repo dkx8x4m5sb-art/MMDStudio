@@ -85,6 +85,9 @@ struct ModelViewerView: View {
     @State private var showRenderStudio = false
     @State private var showSceneEditor = false
     @State private var showMotionImporter = false
+    @State private var motionImport: MMDMotionImport?
+    @State private var motionChoice: UUID?
+    @State private var showMotionPicker = false
     @State private var showExportStudio = false
     @State private var showPoseImporter = false
     @State private var motionError: String?
@@ -273,9 +276,23 @@ struct ModelViewerView: View {
                               onPick: { urls in
                                   showMotionImporter = false
                                   guard let url = urls.first else { return }
-                                  loadMotion(url: url)
+                                  prepareMotion(url: url)
                               },
                               onCancel: { showMotionImporter = false })
+        }
+        .sheet(isPresented: $showMotionPicker) {
+            if let job = motionImport {
+                MotionCandidatePicker(job: job,
+                                      selection: $motionChoice,
+                                      onCancel: {
+                                          showMotionPicker = false
+                                          motionImport = nil
+                                      },
+                                      onLoad: { candidate in
+                                          showMotionPicker = false
+                                          confirmMotion(candidate, from: job)
+                                      })
+            }
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -477,11 +494,42 @@ struct ModelViewerView: View {
         }
     }
 
-    private func loadMotion(url: URL) {
+    /// Scan first, load second. A motion zip holds a camera VMD next to the
+    /// dance, and sometimes one dance per model; picking "the first .vmd" is
+    /// how an import can succeed while playback stays frozen.
+    private func prepareMotion(url: URL) {
         let accessed = url.startAccessingSecurityScopedResource()
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         do {
-            try document.loadMotion(url: url)
+            let job = try document.scanMotion(url: url)
+            guard let best = job.best else { throw MMDModelDocument.noPlayableMotion(in: job) }
+            if job.needsChoice {
+                motionImport = job
+                motionChoice = best.id
+                // The document picker is still dismissing; presenting the next
+                // sheet in the same run loop drops it on iOS 16.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    showMotionPicker = true
+                }
+            } else {
+                motionImport = nil
+                let mapped = try document.loadMotion(candidate: best, from: job)
+                var note = "已加载《\(best.title)》：\(mapped) 根骨骼 · \(best.summary)"
+                if !job.skippedCameraOnly.isEmpty {
+                    note += "（跳过 \(job.skippedCameraOnly.count) 个镜头文件）"
+                }
+                showToast(note)
+            }
+        } catch {
+            motionError = error.localizedDescription
+        }
+    }
+
+    private func confirmMotion(_ candidate: MMDMotionCandidate, from job: MMDMotionImport) {
+        motionImport = nil
+        do {
+            let mapped = try document.loadMotion(candidate: candidate, from: job)
+            showToast("已加载《\(candidate.title)》：\(mapped) 根骨骼 · \(candidate.summary)")
         } catch {
             motionError = error.localizedDescription
         }
@@ -824,5 +872,101 @@ private struct TextureExportView: View {
                 }
             }
         }
+    }
+}
+
+/// Two cuts of the same dance in one zip: one for a YYB Miku rig, one for an
+/// Alice rig. Bone names differ, so the user has to say which model the clip
+/// is for; guessing silently is what produced "imported but nothing moves".
+private struct MotionCandidatePicker: View {
+    let job: MMDMotionImport
+    @Binding var selection: UUID?
+    let onCancel: () -> Void
+    let onLoad: (MMDMotionCandidate) -> Void
+
+    private var chosen: MMDMotionCandidate? {
+        job.candidates.first { $0.id == selection } ?? job.candidates.first
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(job.candidates) { candidate in
+                        Button {
+                            selection = candidate.id
+                        } label: {
+                            row(candidate)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } header: {
+                    Text("压缩包里有 \(job.candidates.count) 个动作")
+                } footer: {
+                    Text("同一支舞针对不同模型做的版本，骨骼名称并不通用。请选与当前模型同一角色的那个，或按包里的说明选择。")
+                        .font(.caption2)
+                }
+
+                if !job.skippedCameraOnly.isEmpty || !job.unreadable.isEmpty {
+                    Section("已跳过") {
+                        ForEach(job.skippedCameraOnly, id: \.self) { name in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(name).font(.caption.monospaced()).lineLimit(1)
+                                Text("只有相机关键帧，导入后模型不会动")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        ForEach(job.unreadable, id: \.self) { name in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(name).font(.caption.monospaced()).lineLimit(1)
+                                Text("无法解析，已忽略").font(.caption2).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("选择动作")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消", action: onCancel)
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("载入") { if let chosen { onLoad(chosen) } }
+                        .disabled(chosen == nil)
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    private func row(_ candidate: MMDMotionCandidate) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: selection == candidate.id ? "largecircle.fill.circle" : "circle")
+                .foregroundStyle(selection == candidate.id ? Color.accentColor : Color.secondary)
+                .padding(.top, 1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(candidate.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                Text(candidate.fileName)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Text(candidate.summary)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if candidate.mappedBoneCount == 0 {
+                    Label("与当前模型骨骼不匹配", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .padding(.vertical, 2)
     }
 }

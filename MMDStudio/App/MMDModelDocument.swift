@@ -173,9 +173,35 @@ final class MMDModelDocument: ObservableObject, Identifiable {
 
     // MARK: - Motion
 
-    func loadMotion(url: URL) throws {
-        var motionURL = url
-        var audioURL: URL?
+    // MARK: - Motion import
+
+    /// Read a picked .vmd / .zip and list every playable clip inside it,
+    /// scored against the bones this model actually has.
+    ///
+    /// A motion zip is rarely a single file. This one holds two camera clips
+    /// and two cuts of the same dance (one for a YYB Miku rig, one for an
+    /// Alice rig). The old code took `files.first(where: vmd)`, and because the
+    /// archive happens to be written camera-first it installed `Camera_NoShake.vmd`
+    /// — two camera keys, zero bone tracks. Parsing succeeded, the timeline
+    /// showed a 0.1 s clip, and playback did nothing.
+    func scanMotion(url: URL) throws -> MMDMotionImport {
+        var vmdFiles: [URL] = []
+        var audioFiles: [URL] = []
+        var folder: URL?
+
+        func collect(from directory: URL) {
+            let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil,
+                                                            options: [.skipsHiddenFiles])
+            guard let enumerator else { return }
+            for case let item as URL in enumerator {
+                switch item.pathExtension.lowercased() {
+                case "vmd": vmdFiles.append(item)
+                case "wav", "mp3", "m4a", "aac": audioFiles.append(item)
+                default: break
+                }
+            }
+        }
+
         if url.pathExtension.lowercased() == "zip" {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
                 ?? URL(fileURLWithPath: NSTemporaryDirectory())
@@ -184,30 +210,117 @@ final class MMDModelDocument: ObservableObject, Identifiable {
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
             try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
             _ = try MMDZipArchive.extract(url: url, to: destination)
-            let enumerator = FileManager.default.enumerator(at: destination, includingPropertiesForKeys: nil,
-                                                            options: [.skipsHiddenFiles])
-            var files = [URL]()
-            if let enumerator {
-                for case let item as URL in enumerator { files.append(item) }
+            folder = destination
+            collect(from: destination)
+        } else if (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+            // A model package can carry its own motions; scanning the folder
+            // keeps "auto-load the bundled motion" from picking a camera clip.
+            folder = url
+            collect(from: url)
+        } else {
+            // Copy the picked file into the import cache while the security
+            // scope is open: the caller stops access before the "which clip"
+            // sheet comes back, and a lazy read would then fail.
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: NSTemporaryDirectory())
+            let destination = documents
+                .appendingPathComponent("MMDStudio/GeneratedMotions/Imports", isDirectory: true)
+                .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            let copy = destination.appendingPathComponent(url.lastPathComponent)
+            if (try? FileManager.default.copyItem(at: url, to: copy)) != nil {
+                vmdFiles = [copy]
+                folder = destination
+            } else {
+                vmdFiles = [url]
             }
-            guard let vmd = files.first(where: { $0.pathExtension.lowercased() == "vmd" }) else {
-                throw MMDLoadError.invalidData("动作压缩包中没有找到 VMD 文件")
+            // Sibling audio is only readable now; copy the same-stem track.
+            let stem = url.deletingPathExtension().lastPathComponent.lowercased()
+            let parent = url.deletingLastPathComponent()
+            let siblings = (try? FileManager.default.contentsOfDirectory(at: parent,
+                                                                         includingPropertiesForKeys: nil,
+                                                                         options: [.skipsHiddenFiles])) ?? []
+            for sibling in siblings where ["wav", "mp3", "m4a", "aac"].contains(sibling.pathExtension.lowercased()) {
+                guard sibling.deletingPathExtension().lastPathComponent.lowercased() == stem else { continue }
+                let target = destination.appendingPathComponent(sibling.lastPathComponent)
+                if (try? FileManager.default.copyItem(at: sibling, to: target)) != nil {
+                    audioFiles.append(target)
+                }
             }
-            motionURL = vmd
-            let stem = vmd.deletingPathExtension().lastPathComponent.lowercased()
-            audioURL = files.first {
-                ["wav", "mp3", "m4a", "aac"].contains($0.pathExtension.lowercased()) &&
-                $0.deletingPathExtension().lastPathComponent.lowercased() == stem
-            } ?? files.first { ["wav", "mp3", "m4a", "aac"].contains($0.pathExtension.lowercased()) }
         }
-        let data = try Data(contentsOf: motionURL)
+
+        guard !vmdFiles.isEmpty else {
+            throw MMDLoadError.invalidData("这里没有找到 VMD 动作文件（压缩包解开了但里面只有音频或图片？）")
+        }
+
+        var candidates = [MMDMotionCandidate]()
+        var cameraOnly = [String]()
+        var unreadable = [String]()
+        for file in vmdFiles.prefix(32) {
+            let parsed: VMDMotion
+            do {
+                parsed = try VMDParser(data: try Data(contentsOf: file)).parse()
+            } catch {
+                unreadable.append(file.lastPathComponent)
+                MMDLog.shared.warning("Motion file rejected: \(file.lastPathComponent) — \(error.localizedDescription)",
+                                      category: "Motion")
+                continue
+            }
+            let mapped = mapBoneTracks(parsed).tracks.count
+            let candidate = MMDMotionCandidate(
+                url: file,
+                title: parsed.name.isEmpty ? file.deletingPathExtension().lastPathComponent : parsed.name,
+                fileName: file.lastPathComponent,
+                boneTrackCount: parsed.boneTracks.count,
+                morphTrackCount: parsed.morphTracks.count,
+                cameraKeyCount: parsed.cameraKeys.count,
+                mappedBoneCount: mapped,
+                maxFrame: parsed.maxFrame,
+                frameRate: parsed.frameRate)
+            if candidate.isPlayable {
+                candidates.append(candidate)
+            } else {
+                cameraOnly.append(file.lastPathComponent)
+            }
+        }
+
+        // Best fit for *this* model first. Both dance cuts are valid, but only
+        // one lands on the bones the current model actually has.
+        candidates.sort { lhs, rhs in
+            if lhs.mappedBoneCount != rhs.mappedBoneCount { return lhs.mappedBoneCount > rhs.mappedBoneCount }
+            if lhs.boneTrackCount != rhs.boneTrackCount { return lhs.boneTrackCount > rhs.boneTrackCount }
+            return lhs.maxFrame > rhs.maxFrame
+        }
+
+        if !cameraOnly.isEmpty {
+            MMDLog.shared.info("Skipped camera-only VMD: \(cameraOnly.joined(separator: ", "))", category: "Motion")
+        }
+        MMDLog.shared.info("Motion scan: \(vmdFiles.count) vmd, \(candidates.count) playable, " +
+                           "best=\(candidates.first?.fileName ?? "none") " +
+                           "mapped=\(candidates.first?.mappedBoneCount ?? 0)",
+                           category: "Motion")
+
+        return MMDMotionImport(folder: folder,
+                               candidates: candidates,
+                               audioFiles: audioFiles,
+                               skippedCameraOnly: cameraOnly,
+                               unreadable: unreadable)
+    }
+
+    /// Load without asking: used by generated motions and by any caller that
+    /// does not care about multiple candidates.
+    func loadMotion(url: URL) throws {
+        let job = try scanMotion(url: url)
+        guard let best = job.best else { throw Self.noPlayableMotion(in: job) }
+        try loadMotion(candidate: best, from: job)
+    }
+
+    @discardableResult
+    func loadMotion(candidate: MMDMotionCandidate, from job: MMDMotionImport) throws -> Int {
+        let data = try Data(contentsOf: candidate.url)
         let loaded = try VMDParser(data: data).parse()
-        guard !loaded.isEmpty else {
-            throw MMDLoadError.invalidData("VMD 文件不包含骨骼、变形或相机关键帧")
-        }
-        let name = loaded.name.isEmpty ? motionURL.deletingPathExtension().lastPathComponent : loaded.name
-        try installMotion(loaded, name: name)
-        if let audioURL {
+        let mapped = try installMotion(loaded, name: candidate.title)
+        if let audioURL = audioURL(for: candidate, in: job) {
             do {
                 let player = try AVAudioPlayer(contentsOf: audioURL)
                 player.prepareToPlay()
@@ -216,15 +329,46 @@ final class MMDModelDocument: ObservableObject, Identifiable {
                 motionAudioName = audioURL.lastPathComponent
                 lipSyncEnvelope = Self.makeLipSyncEnvelope(url: audioURL)
                 MMDLog.shared.info("Lip sync envelope: \(lipSyncEnvelope.count) frames", category: "Motion")
-                MMDLog.shared.info("Motion audio loaded: \(audioURL.lastPathComponent), duration=\(player.duration)", category: "Motion")
+                MMDLog.shared.info("Motion audio loaded: \(audioURL.lastPathComponent), duration=\(player.duration)",
+                                   category: "Motion")
             } catch {
                 MMDLog.shared.warning("Motion audio load failed: \(error.localizedDescription)", category: "Motion")
             }
         }
-        MMDLog.shared.info("VMD loaded: \(motionURL.lastPathComponent), bones=\(loaded.boneTracks.count), " +
-                           "mapped=\(motionBoneTracks.count), frames=\(loaded.maxFrame), " +
+        MMDLog.shared.info("VMD loaded: \(candidate.fileName), bones=\(loaded.boneTracks.count), " +
+                           "mapped=\(mapped), frames=\(loaded.maxFrame), " +
                            "duration=\(String(format: "%.3f", durationSeconds))s",
                            category: "Motion")
+        return mapped
+    }
+
+    /// Human-readable reason an archive produced no playable clip.
+    static func noPlayableMotion(in job: MMDMotionImport) -> MMDLoadError {
+        if !job.skippedCameraOnly.isEmpty && job.unreadable.isEmpty {
+            let names = job.skippedCameraOnly.prefix(4).joined(separator: "、")
+            return .invalidData("压缩包里的 \(job.skippedCameraOnly.count) 个 VMD 都只有镜头数据，没有骨骼动作：" +
+                                "\(names)。它们只控制相机，导入后模型不会动——请选择文件名带 Motion 的那个 VMD。")
+        }
+        if !job.unreadable.isEmpty {
+            let names = job.unreadable.prefix(4).joined(separator: "、")
+            return .invalidData("VMD 文件无法解析：\(names)")
+        }
+        return .invalidData("这个文件里没有骨骼动作，也没有表情关键帧")
+    }
+
+    /// Audio belongs to the chosen clip, not to the archive: pick the track
+    /// whose file name matches the clip, then fall back to the only audio file.
+    private func audioURL(for candidate: MMDMotionCandidate, in job: MMDMotionImport) -> URL? {
+        guard !job.audioFiles.isEmpty else { return nil }
+        let stems = [candidate.url.deletingPathExtension().lastPathComponent.lowercased(),
+                     candidate.title.lowercased()]
+        for stem in stems where !stem.isEmpty {
+            if let match = job.audioFiles.first(where: {
+                $0.deletingPathExtension().lastPathComponent.lowercased() == stem
+            }) { return match }
+        }
+        // Single-audio archives: the wav is the dance track, use it.
+        return job.audioFiles.count == 1 ? job.audioFiles.first : nil
     }
 
     /// Install a generated motion directly, bypassing the VMD round-trip.
@@ -259,6 +403,13 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         boneRotations.removeAll()
         boneOffsets.removeAll()
         buildMotionMaps(newMotion)
+        // A clip that binds to nothing is indistinguishable from a broken
+        // import, so fail loudly instead of leaving a dead timeline behind.
+        if motionBoneTracks.isEmpty && motionMorphTracks.isEmpty && !newMotion.boneTracks.isEmpty {
+            removeMotion()
+            throw MMDLoadError.invalidData("《\(name)》的 \(newMotion.boneTracks.count) 根骨骼名称都和当前模型对不上，" +
+                                           "无法驱动这个模型。请改用与模型同一角色的动作版本。")
+        }
         return motionBoneTracks.count
     }
 
@@ -319,7 +470,11 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         useCameraMotion = false
     }
 
-    private func buildMotionMaps(_ motion: VMDMotion) {
+    /// Resolve VMD track names onto bone indices for the current model.
+    /// Shared by the importer (to score candidates) and by buildMotionMaps.
+    private func mapBoneTracks(_ motion: VMDMotion) -> (tracks: [Int: VMDBoneTrack],
+                                                        unmatched: [String],
+                                                        ignored: Int) {
         var boneByName: [String: Int] = [:]
         var boneByNormalized: [String: Int] = [:]
         for (index, bone) in model.bones.enumerated() {
@@ -373,6 +528,14 @@ final class MMDModelDocument: ObservableObject, Identifiable {
                 unmatched.append(track.name)
             }
         }
+        return (boneTracks, unmatched, ignoredControls)
+    }
+
+    private func buildMotionMaps(_ motion: VMDMotion) {
+        let boneMapping = mapBoneTracks(motion)
+        let boneTracks = boneMapping.tracks
+        let unmatched = boneMapping.unmatched
+        let ignoredControls = boneMapping.ignored
         motionBoneTracks = boneTracks
 
         var morphByName: [String: Int] = [:]
@@ -415,6 +578,10 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         ["センター", "center", "centre", "pelvis", "hips", "hip", "root", "下半身"],
         ["上半身", "spine", "chest", "upperbody", "upper_body", "torso"],
         ["上半身2", "upperchest", "upper_chest", "chest2", "spine1"],
+        // Some motion authors target 上半身1 (the ZZZ rig name) and tell users
+        // to rename 上半身3. Bind that track to 上半身3 when the model has one,
+        // and never to 上半身2 — that one carries its own track.
+        ["上半身1", "上半身3", "upperbody1", "upperbody3", "spine2", "spine3"],
         ["頭", "head", "neck"],
         ["左腕", "leftupperarm", "left_upper_arm", "upperarm_l", "arm_l", "l_arm", "leftarm", "lupperarm", "l_upperarm"],
         ["右腕", "rightupperarm", "right_upper_arm", "upperarm_r", "arm_r", "r_arm", "rightarm", "rupperarm", "r_upperarm"],

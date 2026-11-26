@@ -282,14 +282,17 @@ final class MMDStore: ObservableObject {
                 document.sceneEditEnabled = false
             }
         }
-        if let vmd = findFile(withExtension: "vmd", in: entry.assetDirectory)
-            ?? findFile(withExtension: "vmd", in: entry.packageURL) {
-            do {
-                try document.loadMotion(url: vmd)
-                MMDLog.shared.info("Auto-loaded motion: \(vmd.lastPathComponent), \(document.motionMappingNote)")
-            } catch {
-                MMDLog.shared.warning("Auto motion load failed: \(error.localizedDescription)")
+        // Packages often ship a camera VMD next to the dance. Scanning the
+        // folder and taking the best-scoring clip avoids auto-loading a file
+        // that only moves the camera.
+        do {
+            let job = try document.scanMotion(url: entry.packageURL)
+            if let best = job.best {
+                try document.loadMotion(candidate: best, from: job)
+                MMDLog.shared.info("Auto-loaded motion: \(best.fileName), mapped \(best.mappedBoneCount) bones")
             }
+        } catch {
+            MMDLog.shared.warning("Auto motion load failed: \(error.localizedDescription)")
         }
         return document
     }
@@ -501,16 +504,6 @@ final class MMDStore: ObservableObject {
 
     private func findPMX(in folder: URL) -> URL? {
         findAllPMX(in: folder).first
-    }
-
-    private func findFile(withExtension ext: String, in folder: URL) -> URL? {
-        guard let enumerator = FileManager.default.enumerator(at: folder,
-                                                              includingPropertiesForKeys: [.isRegularFileKey],
-                                                              options: [.skipsHiddenFiles]) else { return nil }
-        for case let url as URL in enumerator {
-            if url.pathExtension.lowercased() == ext { return url }
-        }
-        return nil
     }
 
     static func parseModel(data: Data, url: URL) throws -> PMXModel {
