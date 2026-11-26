@@ -286,7 +286,11 @@ final class MMDVideoExporter: ObservableObject {
             // The display link redraws at 120 Hz; letting it run during an
             // export halves the GPU budget available to the encoder.
             renderer.setPreviewPaused(true)
-            defer { renderer.setPreviewPaused(false) }
+            document.isExporting = true
+            defer {
+                renderer.setPreviewPaused(false)
+                document.isExporting = false
+            }
             do {
                 try FileManager.default.removeItemIfExists(tempURL)
                 let writer = try AVAssetWriter(outputURL: tempURL,

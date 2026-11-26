@@ -36,6 +36,11 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     @Published var motion: VMDMotion?
     @Published var motionName: String = ""
     @Published var useCameraMotion: Bool = false
+    /// Set while a video export owns the renderer. Physics then advances by a
+    /// fixed 1/fps step instead of the wall-clock delta, so a 60 fps render
+    /// simulates the same cloth on every run and does not jitter when a frame
+    /// takes longer than 16 ms to encode.
+    var isExporting: Bool = false
     @Published var currentFrame: Float = 0 {
         didSet { if renderFrame != currentFrame { renderFrame = currentFrame } }
     }
@@ -274,6 +279,9 @@ final class MMDModelDocument: ObservableObject, Identifiable {
 
     var physicsBodyCount: Int { springPhysics.solvedRigidBodyCount }
     var physicsJointCount: Int { springPhysics.solvedJointCount }
+    /// Bones the spring chains actually drive. Zero means the physics switch
+    /// has nothing to move, which is what "physics does nothing" usually is.
+    var clothBoneCount: Int { springPhysics.clothBoneCount }
 
     func removeMotion() {
         pause()
@@ -800,9 +808,11 @@ final class MMDModelDocument: ObservableObject, Identifiable {
             lastPhysicsEnabled = physicsSettings.enabled
         }
         if physicsSettings.enabled {
+            let step: Float? = isExporting ? 1 / max(1, frameRate) : nil
             result = springPhysics.apply(animations: result, model: model,
                                          settings: physicsSettings,
-                                         time: Double(frame / max(1, frameRate)))
+                                         time: Double(frame / max(1, frameRate)),
+                                         forcedStep: step)
         }
         return result
     }

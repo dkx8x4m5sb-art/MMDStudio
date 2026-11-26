@@ -181,16 +181,22 @@ struct SettingsInspectorView: View {
                         }
                         HStack {
                             Text("最大摆角")
-                            Slider(value: physicsMaxAngleBinding, in: 4...45)
+                            Slider(value: physicsMaxAngleBinding, in: 4...90)
                             Text(String(format: "%.0f°", document.physicsSettings.maxAngle))
                                 .captionValue()
                         }
                         Stepper("子步 \(document.physicsSettings.substeps)",
                                 value: $document.physicsSettings.substeps, in: 1...4)
                     }
+                    LabeledContent("布料骨骼（链）", value: "\(document.clothBoneCount)")
                     LabeledContent("PMX 动态刚体", value: "\(document.physicsBodyCount)")
                     LabeledContent("PMX 关节", value: "\(document.physicsJointCount)")
-                    Text("摆动模式用世界坐标下的重力目标角 + 弹簧阻尼积分，骨骼会朝地面下垂并随身体转动产生惯性；刚体模式额外做重力、关节弹簧、地面与同组外碰撞。两者都不会写入 IK 链骨骼。柔软体（PMX 2.1 soft body）仍按骨骼链近似，不是 Bullet 逐顶点软体。")
+                    if document.physicsSettings.mode != .off && document.clothBoneCount == 0
+                        && document.physicsBodyCount == 0 {
+                        Text("这个模型既没有可识别的裙/髪/飘带骨骼，也没有动态刚体，物理无从驱动。")
+                            .font(.caption).foregroundStyle(.orange)
+                    }
+                    Text("摆动模式对每一节链骨独立积分角速度：重力、风力、身体拖拽共同作用，越靠末端越软，并用腿/躯干胶囊体挡住穿模。刚体模式在模型自带动态刚体时优先使用它；没有刚体时自动回退到链式摆动。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

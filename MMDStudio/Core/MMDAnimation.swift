@@ -566,14 +566,16 @@ enum MMDPhysicsMode: String, CaseIterable, Identifiable {
 /// their motion is fed back into the bound bones. This is a compact Bullet-like
 /// approximation, not a bit-exact port of Bullet's constraint solver.
 struct MMDPhysicsSettings {
-    var mode: MMDPhysicsMode = .off
+    var mode: MMDPhysicsMode = .secondary
     var gravity: Float = 0.6
     var stiffness: Float = 0.4
     var damping: Float = 0.35
     var wind: Float = 0.15
     var inertia: Float = 0.8
     var collision: Bool = true
-    var maxAngle: Float = 24
+    /// Cone limit for a single cloth link, in degrees. The link's own kind
+    /// scales this (skirts swing widest), so the visible range is larger.
+    var maxAngle: Float = 40
     var substeps: Int = 2
 
     var enabled: Bool { mode != .off }
@@ -581,20 +583,94 @@ struct MMDPhysicsSettings {
 
 final class MMDSpringPhysics {
 
-    private struct ChainBone {
-        var index: Int
-        var parent: Int
-        var depth: Int
-        var maxAngle: Float        // degrees
-        var phase: Float
-        var restAxis: SIMD3<Float> // rest bone direction in world space
-        var restQuat: simd_quatf   // approximation of the rest world rotation
-        var length: Float          // bone length, used for the clip capsule test
-        var hipOffset: SIMD3<Float> // rest position relative to the body axis
-        var angle: Float = 0       // current spring angle in radians
-        var velocity: Float = 0    // angular velocity in radians / second
-        var smoothedTarget: Float = 0
+    // MARK: - Skeleton mirror
+
+    /// The solver needs the current world transform of every bone so a cloth
+    /// link can hang off its real parent (which may itself be a cloth link).
+    /// Rebuilding the whole skeleton each frame is cheap (a topological pass
+    /// over ~200 bones) and it is what makes the chain actually follow the
+    /// body: the previous version had no parent transform at all and drove
+    /// only the root of each chain, so a skirt moved as one rigid plate.
+    private var boneCount = 0
+    private var parentIndices: [Int] = []
+    private var restLocal: [SIMD3<Float>] = []
+    private var topoOrder: [Int] = []
+    private var childIndices: [[Int]] = []
+    private var restWorldPos: [SIMD3<Float>] = []
+    private var worldPos: [SIMD3<Float>] = []
+    private var worldQuat: [simd_quatf] = []
+    private var modelHeight: Float = 20
+    private var floorY: Float = 0
+    /// Skeleton positions captured right after `evaluate`, i.e. before any
+    /// cloth feedback. The drag term reads the delta between two frames of
+    /// *these*, so cloth never drives itself.
+    private var skeletonPos: [SIMD3<Float>] = []
+    private var lastSkeletonPos: [SIMD3<Float>] = []
+
+    private enum ChainKind {
+        case skirt, hair, sleeve, wing, ribbon, other
+
+        /// How far the link may swing away from its parent-driven rest
+        /// direction, as a multiple of the user's max-angle setting. Cloth and
+        /// ribbons get the widest cone; hair is stiffer because long hair that
+        /// flips past its rest pose looks broken.
+        var angleScale: Float {
+            switch self {
+            case .skirt: return 2.1
+            case .ribbon: return 2.0
+            case .wing: return 1.8
+            case .sleeve: return 1.6
+            case .hair: return 1.45
+            case .other: return 1.3
+            }
+        }
+
+        /// Fraction of gravity the link actually feels. A skirt hem should be
+        /// pulled down hard; hair keeps some shape.
+        var gravityScale: Float {
+            switch self {
+            case .skirt: return 1.0
+            case .ribbon: return 0.9
+            case .sleeve: return 0.85
+            case .wing: return 0.7
+            case .hair: return 0.6
+            case .other: return 0.8
+            }
+        }
     }
+
+    private struct ClothNode {
+        var bone: Int
+        var parentBone: Int
+        var length: Float
+        /// Direction from the parent bone to this bone in model space. Because
+        /// PMX bones carry no rest rotation, this is also the bone's rest
+        /// world orientation.
+        var restDir: SIMD3<Float>
+        /// Current world-space direction, unit length.
+        var dir: SIMD3<Float>
+        /// World-space angular velocity in radians per second.
+        var omega: SIMD3<Float>
+        var angleScale: Float
+        var gravityScale: Float
+        /// Rest-shape spring. Lower for the hem so it swings freely.
+        var stiffness: Float
+        var kind: ChainKind
+    }
+
+    private var clothNodes: [ClothNode] = []
+
+    // MARK: - Colliders
+
+    private struct Capsule {
+        var boneA: Int
+        var boneB: Int
+        var radius: Float
+    }
+
+    private var capsules: [Capsule] = []
+
+    // MARK: - Rigid bodies
 
     private struct RigidState {
         var body: PMXRigidBody
@@ -607,49 +683,63 @@ final class MMDSpringPhysics {
     }
 
     private struct JointLink {
-        var type: UInt8
-        var a: Int
-        var b: Int
+        var bodyA: Int
+        var bodyB: Int
         var offset: SIMD3<Float>
-        var spring: SIMD3<Float>
+        var springPosition: SIMD3<Float>
         var springRotation: SIMD3<Float>
     }
 
-    private var offsets: [Int: SIMD3<Float>] = [:]
-    private var velocities: [Int: SIMD3<Float>] = [:]
-    private var chainBones: [ChainBone] = []
     private var rigidStates: [RigidState] = []
     private var rigidStateByBody: [Int: Int] = [:]
     private var joints: [JointLink] = []
-    private var lastTime: CFTimeInterval = 0
-    private var lastBodyRotation: simd_quatf = mmdIdentityQuaternion
     private var rigidBoneIndices: Set<Int> = []
-    private var secondaryBones: Set<Int> = []
-    /// Bones touched by a PMX IK chain. Rotating these in the physics pass made
-    /// the IK solver overshoot on the next frame, which is why models stopped
-    /// exploding as soon as "IK 求解" was switched off. Physics now never writes
-    /// to them, so the two solvers can stay on together.
     private var ikBones: Set<Int> = []
-    private var hipCenter = SIMD3<Float>()
+
+    private var lastTime: CFTimeInterval = 0
     private var stepAccumulator: Float = 0
+
     private(set) var solvedRigidBodyCount = 0
     private(set) var solvedJointCount = 0
+    /// Number of bones the spring/chain solver drives. Surfaced in the
+    /// inspector so "physics does nothing" can be told apart from "this model
+    /// has no cloth bones".
+    private(set) var drivenBoneCount = 0
+    /// Bones the spring chains actually steer. Shown in the inspector.
+    var clothBoneCount: Int { clothNodes.count }
 
-    private let keywords = ["髪", "hair", "skirt", "スカート", "ribbon", "リボン",
-                            "tail", "尾", "cape", "マント", "袖", "sleeve", "breast", "胸",
-                            "wing", "羽", "翼", "feather", "羽根", "plume", "frill", "フリル",
-                            "cloth", "裾", "垂", "发饰", "髪飾", "headdress", "dress", "ドレス",
-                            "apron", "エプロン", "belt", "ベルト", "scarf", "マフラー", "ネクタイ"]
+    // MARK: - Keywords
+
+    private static let clothKeywords = [
+        "髪", "hair", "skirt", "スカート", "ribbon", "リボン", "tail", "尾",
+        "cape", "マント", "袖", "sleeve", "breast", "胸", "wing", "羽", "翼",
+        "feather", "羽根", "plume", "frill", "フリル", "cloth", "裾", "垂",
+        "发饰", "髪飾", "headdress", "dress", "ドレス", "apron", "エプロン",
+        "belt", "ベルト", "scarf", "マフラー", "ネクタイ", "necktie",
+        // Chinese-authored rigs (王者/原神国服提取) name bones in pinyin or
+        // Chinese rather than Japanese, which the old table never matched.
+        "裙", "衣摆", "飘带", "披风", "头发", "刘海", "马尾", "辫", "发梢",
+        "围巾", "腰带", "领带", "下摆", "纱", "穗", "毛", "尾巴"
+    ]
+
+    private static let humanoidMarkers = [
+        "センター", "center", "上半身", "下半身", "upperbody", "upper body",
+        "lowerbody", "lower body", "spine", "chest", "torso", "hip", "hips",
+        "pelvis", "waist", "腰", "体幹", "root", "頭", "head",
+        "首", "neck", "肩", "shoulder", "腕", "arm", "ひじ", "elbow",
+        "手首", "wrist", "hand", "指", "finger", "thumb", "足", "leg",
+        "脚", "もも", "thigh", "ひざ", "knee", "calf", "shin", "すね",
+        "足首", "ankle", "かかと", "heel", "foot", "toe", "つま先"
+    ]
+
+    // MARK: - Lifecycle
 
     func reset() {
-        offsets.removeAll()
-        velocities.removeAll()
-        for index in chainBones.indices {
-            chainBones[index].angle = 0
-            chainBones[index].velocity = 0
+        for index in clothNodes.indices {
+            clothNodes[index].dir = clothNodes[index].restDir
+            clothNodes[index].omega = .zero
         }
         lastTime = 0
-        lastBodyRotation = mmdIdentityQuaternion
         stepAccumulator = 0
         for index in rigidStates.indices {
             rigidStates[index].position = rigidStates[index].restPosition
@@ -660,141 +750,232 @@ final class MMDSpringPhysics {
     }
 
     func prepare(model: PMXModel) {
-        chainBones.removeAll()
-        offsets.removeAll()
-        velocities.removeAll()
-        rigidStates.removeAll()
-        rigidStateByBody.removeAll()
-        joints.removeAll()
-        rigidBoneIndices.removeAll()
-        secondaryBones.removeAll()
-        ikBones.removeAll()
+        boneCount = model.bones.count
+        modelHeight = max(0.5, model.bounds.height)
+        floorY = model.bounds.minPoint.y
 
-        var byName = [String: Int]()
-        for (index, bone) in model.bones.enumerated() {
-            byName[bone.name] = index
-            if !bone.nameEn.isEmpty { byName[bone.nameEn] = index }
+        parentIndices = model.bones.enumerated().map { index, bone in
+            let parent = bone.parentIndex
+            if parent < 0 || parent >= model.bones.count || parent == index { return -1 }
+            return parent
+        }
+        restLocal = model.bones.map { $0.position }
+        restWorldPos = [SIMD3<Float>](repeating: .zero, count: boneCount)
+        worldPos = [SIMD3<Float>](repeating: .zero, count: boneCount)
+        worldQuat = [simd_quatf](repeating: mmdIdentityQuaternion, count: boneCount)
+
+        // Children lists + a parent-before-child order. A malformed file can
+        // contain a parent cycle; anything unreachable is appended afterwards
+        // so the arrays stay fully populated instead of trapping.
+        childIndices = [[Int]](repeating: [], count: boneCount)
+        var roots: [Int] = []
+        for index in 0..<boneCount {
+            let parent = parentIndices[index]
+            if parent >= 0 { childIndices[parent].append(index) } else { roots.append(index) }
+        }
+        topoOrder = []
+        topoOrder.reserveCapacity(boneCount)
+        var stack = Array(roots.reversed())
+        var visited = [Bool](repeating: false, count: boneCount)
+        while let index = stack.popLast() {
+            if visited[index] { continue }
+            visited[index] = true
+            topoOrder.append(index)
+            for child in childIndices[index].reversed() where !visited[child] {
+                stack.append(child)
+            }
+        }
+        if topoOrder.count < boneCount {
+            for index in 0..<boneCount where !visited[index] {
+                topoOrder.append(index)
+            }
         }
 
-        // Collect every bone that an IK solver rewrites each frame.
+        for index in topoOrder {
+            let parent = parentIndices[index]
+            restWorldPos[index] = (parent >= 0 ? restWorldPos[parent] : .zero) + restLocal[index]
+        }
+        skeletonPos = restWorldPos
+        lastSkeletonPos = restWorldPos
+
+        ikBones.removeAll()
         for (index, bone) in model.bones.enumerated() {
             guard let ik = bone.ik, ik.targetIndex >= 0 else { continue }
             ikBones.insert(index)
-            if ik.targetIndex < model.bones.count { ikBones.insert(ik.targetIndex) }
-            for link in ik.links where link.boneIndex >= 0 && link.boneIndex < model.bones.count {
+            if ik.targetIndex < boneCount { ikBones.insert(ik.targetIndex) }
+            for link in ik.links where link.boneIndex >= 0 && link.boneIndex < boneCount {
                 ikBones.insert(link.boneIndex)
             }
         }
 
-        // Rest world transforms, used to derive each chain bone's rest direction
-        // so gravity can pull it toward the floor instead of using a blind sine.
-        var restWorldPos = [SIMD3<Float>](repeating: .zero, count: model.bones.count)
-        var restWorldQuat = [simd_quatf](repeating: mmdIdentityQuaternion, count: model.bones.count)
-        for index in model.bones.indices {
-            let bone = model.bones[index]
-            let parent = bone.parentIndex
-            let parentPos = parent >= 0 && parent < model.bones.count ? restWorldPos[parent] : .zero
-            let parentQuat = parent >= 0 && parent < model.bones.count ? restWorldQuat[parent] : mmdIdentityQuaternion
-            let localPos = bone.position
-            restWorldPos[index] = parentPos + parentQuat.act(localPos)
-            restWorldQuat[index] = parentQuat
-        }
+        buildClothNodes(model: model)
+        buildColliders(model: model)
+        buildRigidBodies(model: model)
+        reset()
+    }
+
+    // MARK: - Cloth graph
+
+    private func buildClothNodes(model: PMXModel) {
+        clothNodes.removeAll()
 
         var secondary = Set<Int>()
         for (index, bone) in model.bones.enumerated() {
-            let lower = bone.name.lowercased() + " " + bone.nameEn.lowercased()
-            guard keywords.contains(where: { lower.contains($0) }) else { continue }
-            // Control/helper bones (Ctr_/Skn_/dummy) are often already posed by
-            // the VMD. Rotating them again in the physics pass folds cloth onto
-            // itself.
+            let lower = (bone.name + " " + bone.nameEn).lowercased()
+            guard Self.clothKeywords.contains(where: { lower.contains($0) }) else { continue }
+            // Control/helper bones (Ctr_/Skn_/dummy) are already posed by the
+            // VMD. Rotating them again folds cloth onto itself.
             if lower.contains("ctr_") || lower.contains("skn_") || lower.contains("dummy") { continue }
-            // Never fight the IK solver or deform the humanoid core.
             if ikBones.contains(index) || Self.isHumanoidDeformBone(bone) { continue }
             secondary.insert(index)
         }
-        // Some rigs only name the chain root ("skirt_master") and leave child
-        // bones generic. Walk upward from every bone and include a chain when
-        // its parent is a known secondary root.
-        for (index, bone) in model.bones.enumerated() {
-            guard !ikBones.contains(index), !Self.isHumanoidDeformBone(bone) else { continue }
-            var cursor = bone.parentIndex
+        // Some rigs only name the chain root ("skirt_master") and leave the
+        // child bones generic. Include a bone when one of its ancestors is a
+        // known secondary root.
+        for index in 0..<boneCount where !secondary.contains(index) {
+            guard !ikBones.contains(index), !Self.isHumanoidDeformBone(model.bones[index]) else { continue }
+            var cursor = parentIndices[index]
             var guardCount = 0
-            while cursor >= 0 && cursor < model.bones.count && guardCount < 8 {
-                if secondary.contains(cursor) {
-                    secondary.insert(index)
-                    break
-                }
-                cursor = model.bones[cursor].parentIndex
+            while cursor >= 0 && guardCount < 8 {
+                if secondary.contains(cursor) { secondary.insert(index); break }
+                cursor = parentIndices[cursor]
                 guardCount += 1
             }
         }
-
-        secondaryBones = secondary
-
-        for index in secondary.sorted() {
-            guard index >= 0 && index < model.bones.count else { continue }
-            let bone = model.bones[index]
-            // Drive only the root of each secondary chain. Applying an angle to
-            // every link compounds down the chain (10 links × 20° = 200°),
-            // which is what made skirts, ribbons and hair fly apart.
-            if bone.parentIndex >= 0, secondary.contains(bone.parentIndex) { continue }
-            let lower = bone.name.lowercased() + " " + bone.nameEn.lowercased()
-            var maxAngle: Float = 16
-            if lower.contains("wing") || lower.contains("羽") || lower.contains("翼") { maxAngle = 18 }
-            else if lower.contains("ribbon") || lower.contains("リボン") || lower.contains("尾") { maxAngle = 16 }
-            else if lower.contains("skirt") || lower.contains("スカート") || lower.contains("裾") { maxAngle = 14 }
-            else if lower.contains("hair") || lower.contains("髪") { maxAngle = 11 }
-            else if lower.contains("sleeve") || lower.contains("袖") { maxAngle = 13 }
-            var depth = 0
-            var cursor = bone.parentIndex
-            while cursor >= 0 && cursor < model.bones.count && depth < 12 {
-                depth += 1
-                cursor = model.bones[cursor].parentIndex
-            }
-            // Direction of the bone: prefer the authored tail bone, then the
-            // first child in the chain, then world up.
-            var tailDirection = SIMD3<Float>(0, 1, 0)
-            if bone.tailIndex >= 0 && bone.tailIndex < model.bones.count {
-                let delta = restWorldPos[bone.tailIndex] - restWorldPos[index]
-                if simd_length(delta) > 0.0001 { tailDirection = simd_normalize(delta) }
-            } else if let child = model.bones.firstIndex(where: { $0.parentIndex == index }) {
-                let delta = restWorldPos[child] - restWorldPos[index]
-                if simd_length(delta) > 0.0001 { tailDirection = simd_normalize(delta) }
-            }
-            // Used by the soft clip test: how far the bone reaches and where it
-            // starts relative to the hips.
-            hipCenter = SIMD3<Float>((model.bounds.minPoint.x + model.bounds.maxPoint.x) * 0.5,
-                                     model.bounds.minPoint.y + model.bounds.height * 0.55,
-                                     (model.bounds.minPoint.z + model.bounds.maxPoint.z) * 0.5)
-            let boneLength: Float = {
-                if bone.tailIndex >= 0 && bone.tailIndex < model.bones.count {
-                    let delta = restWorldPos[bone.tailIndex] - restWorldPos[index]
-                    let magnitude = simd_length(delta)
-                    if magnitude > 0.0001 { return magnitude }
-                }
-                if let child = model.bones.firstIndex(where: { $0.parentIndex == index }) {
-                    let delta = restWorldPos[child] - restWorldPos[index]
-                    let magnitude = simd_length(delta)
-                    if magnitude > 0.0001 { return magnitude }
-                }
-                return max(0.02, model.bounds.height * 0.01)
-            }()
-            let hipDistance = simd_length(restWorldPos[index] - hipCenter)
-            if hipDistance < model.bounds.height * 0.14 {
-                maxAngle = min(maxAngle, maxAngle * 0.6)
-            }
-            chainBones.append(ChainBone(index: index, parent: bone.parentIndex,
-                                        depth: depth,
-                                        maxAngle: maxAngle,
-                                        phase: Float(index % 11) * 0.37,
-                                        restAxis: tailDirection,
-                                        restQuat: restWorldQuat[index],
-                                        length: boneLength,
-                                        hipOffset: restWorldPos[index] - hipCenter))
+        guard !secondary.isEmpty else {
+            drivenBoneCount = 0
+            return
         }
 
-        // Build rigid-body state. Static/kinematic bodies are anchors only.
+        var chainRoots: [Int] = []
+        for index in secondary.sorted() {
+            let parent = parentIndices[index]
+            if parent >= 0 && secondary.contains(parent) { continue }
+            chainRoots.append(index)
+        }
+
+        // Breadth-first so a link is always created after its parent, which
+        // lets `step` walk the array once and still see updated parents.
+        var queue: [Int] = chainRoots
+        var cursor = 0
+        var depthOf = [Int: Int]()
+        for root in chainRoots { depthOf[root] = 0 }
+        while cursor < queue.count {
+            let bone = queue[cursor]
+            cursor += 1
+            let parent = parentIndices[bone]
+            let depth = depthOf[bone] ?? 0
+            var direction = SIMD3<Float>(0, -1, 0)
+            var length: Float = modelHeight * 0.04
+            if parent >= 0 {
+                let delta = restWorldPos[bone] - restWorldPos[parent]
+                let magnitude = simd_length(delta)
+                if magnitude > 0.0001 {
+                    direction = delta / magnitude
+                    length = magnitude
+                }
+            }
+            let lower = (model.bones[bone].name + " " + model.bones[bone].nameEn).lowercased()
+            let kind = Self.chainKind(lower)
+            // The hem must swing freely, the root has to hold its shape.
+            let taper = powf(0.80, Float(depth))
+            clothNodes.append(ClothNode(bone: bone,
+                                        parentBone: parent,
+                                        length: max(0.002, length),
+                                        restDir: direction,
+                                        dir: direction,
+                                        omega: .zero,
+                                        angleScale: kind.angleScale * (1 + Float(depth) * 0.12),
+                                        gravityScale: kind.gravityScale,
+                                        stiffness: max(0.12, taper),
+                                        kind: kind))
+            for child in childIndices[bone] where secondary.contains(child) && depth < 12 {
+                if depthOf[child] == nil {
+                    depthOf[child] = depth + 1
+                    queue.append(child)
+                }
+            }
+        }
+        drivenBoneCount = clothNodes.count
+    }
+
+    private static func chainKind(_ lower: String) -> ChainKind {
+        if lower.contains("skirt") || lower.contains("スカート") || lower.contains("裾")
+            || lower.contains("裙") || lower.contains("下摆") || lower.contains("衣摆") {
+            return .skirt
+        }
+        if lower.contains("ribbon") || lower.contains("リボン") || lower.contains("尾")
+            || lower.contains("飘带") || lower.contains("belt") || lower.contains("ベルト")
+            || lower.contains("necktie") || lower.contains("ネクタイ") || lower.contains("领带") {
+            return .ribbon
+        }
+        if lower.contains("wing") || lower.contains("羽") || lower.contains("翼") { return .wing }
+        if lower.contains("sleeve") || lower.contains("袖") { return .sleeve }
+        if lower.contains("hair") || lower.contains("髪") || lower.contains("头发")
+            || lower.contains("刘海") || lower.contains("马尾") || lower.contains("辫") {
+            return .hair
+        }
+        return .other
+    }
+
+    // MARK: - Colliders
+
+    private func buildColliders(model: PMXModel) {
+        capsules.removeAll()
+        let height = modelHeight
+        func first(_ keys: [String], side: Int = 0) -> Int {
+            for (index, bone) in model.bones.enumerated() {
+                let lower = (bone.name + " " + bone.nameEn).lowercased()
+                guard keys.contains(where: { lower.contains($0) }) else { continue }
+                if side != 0 {
+                    let sign = Self.sideSign(lower)
+                    if sign != side { continue }
+                }
+                return index
+            }
+            return -1
+        }
+
+        let hips = first(["下半身", "lowerbody", "lower body", "hips", "hip", "pelvis", "腰"])
+        let chest = first(["上半身2", "upperbody2", "upper body2", "chest", "胸", "上半身", "upperbody", "spine"])
+        if hips >= 0 || chest >= 0 {
+            capsules.append(Capsule(boneA: hips, boneB: chest, radius: height * 0.075))
+        }
+        for side in [-1, 1] {
+            let thigh = first(["もも", "thigh", "upleg", "upperleg", "大腿"], side: side)
+            let knee = first(["ひざ", "knee", "shin", "calf", "すね", "小腿"], side: side)
+            let ankle = first(["足首", "ankle", "foot", "足"], side: side)
+            if thigh >= 0 && knee >= 0 {
+                capsules.append(Capsule(boneA: thigh, boneB: knee, radius: height * 0.042))
+            }
+            if knee >= 0 && ankle >= 0 {
+                capsules.append(Capsule(boneA: knee, boneB: ankle, radius: height * 0.035))
+            }
+        }
+    }
+
+    private static func sideSign(_ lower: String) -> Int {
+        let left = lower.contains("左") || lower.contains("left") || lower.contains("_l")
+            || lower.hasPrefix("l_") || lower.contains(" l ") || lower.hasSuffix(" l")
+            || lower.contains(".l")
+        if left { return -1 }
+        let right = lower.contains("右") || lower.contains("right") || lower.contains("_r")
+            || lower.hasPrefix("r_") || lower.contains(" r ") || lower.hasSuffix(" r")
+            || lower.contains(".r")
+        if right { return 1 }
+        return 0
+    }
+
+    // MARK: - Rigid bodies
+
+    private func buildRigidBodies(model: PMXModel) {
+        rigidStates.removeAll()
+        rigidStateByBody.removeAll()
+        joints.removeAll()
+        rigidBoneIndices.removeAll()
+
         for (bodyIndex, body) in model.rigidBodies.enumerated() where body.mode >= 2 && body.boneIndex >= 0 {
+            guard body.boneIndex < boneCount else { continue }
             let restRotation = quatFromEuler(SIMD3<Float>(mmdRadians(body.rotation.x),
                                                           mmdRadians(body.rotation.y),
                                                           mmdRadians(body.rotation.z)))
@@ -805,235 +986,334 @@ final class MMDSpringPhysics {
                                           restRotation: restRotation))
             rigidBoneIndices.insert(body.boneIndex)
         }
-        // Limit the O(n²) collision pass on very heavy models while retaining
-        // the bodies closest to the hips/legs and hair.
-        if rigidStates.count > 96 {
-            rigidStates = Array(rigidStates.prefix(96))
-            rigidBoneIndices = Set(rigidStates.map { $0.body.boneIndex })
-        }
         for joint in model.joints {
             guard joint.bodyA >= 0, joint.bodyB >= 0,
                   joint.bodyA < model.rigidBodies.count,
                   joint.bodyB < model.rigidBodies.count else { continue }
             let a = model.rigidBodies[joint.bodyA].position
             let b = model.rigidBodies[joint.bodyB].position
-            joints.append(JointLink(type: joint.type, a: joint.bodyA, b: joint.bodyB,
+            joints.append(JointLink(bodyA: joint.bodyA, bodyB: joint.bodyB,
                                     offset: a - b,
-                                    spring: joint.springPosition,
+                                    springPosition: joint.springPosition,
                                     springRotation: joint.springRotation))
         }
         solvedRigidBodyCount = rigidStates.count
         solvedJointCount = joints.count
-        reset()
     }
+
+    // MARK: - Frame
 
     func apply(animations: [Int: MMDBoneAnimation], model: PMXModel,
                settings: MMDPhysicsSettings, time: CFTimeInterval,
                forcedStep: Float? = nil,
                driveRotation: simd_quatf? = nil) -> [Int: MMDBoneAnimation] {
         guard settings.mode != .off else { return animations }
-        if forcedStep == nil && time < lastTime { reset() }
-        let dt: Float
+        guard boneCount > 0 else { return animations }
+        if time < lastTime { reset() }
+
+        // `advance == false` means the renderer asked for the same instant
+        // again: a 120 Hz redraw of a paused frame, or a second draw pass.
+        // The pose still has to be emitted, otherwise the cloth snaps back to
+        // its rest shape on every repaint and "physics does nothing" again.
+        var advance = false
+        var dt: Float = 0
         if let forcedStep {
+            advance = true
             dt = max(0.001, min(0.05, forcedStep))
-        } else {
-            if lastTime == 0 {
-                lastTime = time
-                return animations
-            }
-            guard time > lastTime + 0.00001 else {
-                return animations
-            }
+        } else if lastTime > 0 && time > lastTime + 0.00001 {
+            advance = true
             dt = Float(min(0.05, max(0.001, time - lastTime)))
         }
         lastTime = max(lastTime, time)
 
-        // Upper body rotation is what actually swings cloth; the center bone
-        // usually only carries translation and yaw.
-        let centerIndex = model.bones.firstIndex {
-            $0.name == "上半身" || $0.name.lowercased().contains("upper body")
-                || $0.name.lowercased() == "spine"
-        } ?? model.bones.firstIndex {
-            $0.name == "センター" || $0.name.lowercased().contains("center")
-        }
-        let bodyRotation = driveRotation
-            ?? centerIndex.flatMap { animations[$0]?.rotation }
-            ?? mmdIdentityQuaternion
-        // Axis-angle rather than euler: euler deltas flip sign near ±180°
-        // and injected a per-frame jitter into hair and wings.
-        let delta = bodyRotation * lastBodyRotation.inverse
-        let deltaAngle = 2 * acosf(min(1, abs(delta.real)))
-        let deltaAxis = simd_length(delta.imag) > 0.0001 ? simd_normalize(delta.imag) : SIMD3<Float>(0, 0, 0)
-        let bodySwing = deltaAxis * (deltaAngle > 1e-4 ? deltaAngle : 0)
-        lastBodyRotation = bodyRotation
-
-        // Fixed-step accumulator: preview frame times vary with the display
-        // refresh, which made the springs jitter while the fixed-rate video
-        // export stayed smooth. Integrate at a constant 60 Hz instead.
         let fixedStep: Float = 1.0 / 60.0
-        stepAccumulator += dt
-        var stepCount = min(3, Int(stepAccumulator / fixedStep))
-        stepAccumulator -= Float(stepCount) * fixedStep
-        if stepCount < 0 { stepCount = 0 }
+        var stepLength: Float = 0
+        if advance {
+            if forcedStep != nil {
+                stepLength = dt
+            } else {
+                // Fixed-step accumulator: preview frame times vary with the
+                // display refresh, which made the springs jitter while the
+                // fixed-rate video export stayed smooth. At least one step is
+                // taken so a fast display cannot stall the solver.
+                stepAccumulator += dt
+                let stepCount = min(4, max(1, Int(stepAccumulator / fixedStep)))
+                stepAccumulator = max(0, stepAccumulator - Float(stepCount) * fixedStep)
+                stepLength = fixedStep * Float(stepCount)
+            }
+        }
+
+        evaluate(animations: animations)
+        lastSkeletonPos = skeletonPos
+        skeletonPos = worldPos
 
         var result = animations
-        let gravity = max(0, settings.gravity)
-        let stiffness = max(0.02, settings.stiffness)
-        let damping = max(0.02, settings.damping)
-        let wind = max(0, settings.wind)
-        let inertia = max(0, settings.inertia)
-
-        for nodeIndex in chainBones.indices {
-            var node = chainBones[nodeIndex]
-            let index = node.index
-            guard !rigidBoneIndices.contains(index), !ikBones.contains(index) else { continue }
-            // A VMD track on a cloth/hair bone is an explicit pose. Adding the
-            // spring rotation on top of it doubles the deformation and is the
-            // main cause of the "physics on" explosion.
-            // VMD often writes an identity track for every bone. Skipping any
-            // track at all silently disabled the cloth solver. Bones that are
-            // genuinely posed still receive a damped additive swing instead of
-            // being skipped entirely, otherwise wings animated by the VMD look
-            // stiff.
-            var additiveScale: Float = 1
-            if let track = animations[index] {
-                let trackAngle = 2 * acosf(min(1, abs(track.rotation.real)))
-                if trackAngle > mmdRadians(8) { additiveScale = 0.5 }
+        // "PMX 刚体" on a model whose rigid-body section is empty (very common
+        // for game-ripped characters) used to do nothing at all. Fall back to
+        // the spring chains so the switch is never a no-op.
+        let useCloth = settings.mode == .secondary
+            || (settings.mode == .rigid && rigidStates.isEmpty)
+        if useCloth && !clothNodes.isEmpty {
+            stepCloth(settings: settings, dt: stepLength, time: Float(time))
+            for node in clothNodes {
+                let bone = node.bone
+                let parent = node.parentBone
+                let parentQuat = parent >= 0 ? worldQuat[parent] : mmdIdentityQuaternion
+                let local = parentQuat.inverse * worldQuat[bone]
+                var animation = result[bone] ?? MMDBoneAnimation()
+                // Keep any authored twist (a VMD pose on a hair bone) but let
+                // the solved direction win. Multiplying on the right leaves the
+                // bone pointing where physics put it.
+                animation.rotation = local * animation.rotation
+                result[bone] = animation
             }
-
-            // World orientation of this bone at rest, rotated by the body so
-            // gravity is applied in world space rather than a blind sine wave.
-            let worldQuat = bodyRotation * node.restQuat
-            var down = SIMD3<Float>(0, -1, 0)
-            let timeValue = Float(time)
-            down += SIMD3<Float>(
-                sinf(timeValue * (0.9 + wind * 1.6) + node.phase),
-                0,
-                cosf(timeValue * 1.3 + node.phase)
-            ) * (wind * 0.55)
-            down = simd_length(down) > 0.0001 ? simd_normalize(down) : SIMD3<Float>(0, -1, 0)
-
-            let axis = simd_normalize(worldQuat.act(node.restAxis))
-            let dotValue = max(-1, min(1, simd_dot(axis, down)))
-            // Angle between the bone and the gravity direction. Gravity strength
-            // scales how much of that angle the bone is allowed to give up.
-            let droop = acosf(dotValue) * min(1.0, gravity)
-            // Swing from the body's angular motion, expressed in radians.
-            let swing = min(node.maxAngle * 0.8 * 0.017,
-                            (bodySwing.x * 0.9 + bodySwing.z * 0.35) * inertia * 2.2)
-            var target = max(-node.maxAngle * 1.4, min(node.maxAngle * 1.4,
-                              (min(droop, mmdRadians(node.maxAngle)) + swing)))
-
-            // Soft anti-clip test: if the bone tip would land inside the torso
-            // cylinder, pull the target back toward rest instead of letting the
-            // skirt or hair pass through the body.
-            if settings.collision {
-                let tip = hipCenter + bodyRotation.act(node.hipOffset + node.restAxis * node.length)
-                let torsoRadius = max(0.03, model.bounds.height * 0.045)
-                let torsoTop = hipCenter.y + model.bounds.height * 0.14
-                let torsoBottom = hipCenter.y - model.bounds.height * 0.12
-                let horizontal = SIMD3<Float>(tip.x - hipCenter.x, 0, tip.z - hipCenter.z)
-                if tip.y > torsoBottom, tip.y < torsoTop {
-                    // Continuous falloff instead of a binary in/out test: the
-                    // hard cut switched the target between full and 45% every
-                    // frame and read as jitter while playing.
-                    let distance = simd_length(horizontal)
-                    let penetration = max(0, torsoRadius * 1.5 - distance) / (torsoRadius * 1.5)
-                    target *= 1 - 0.55 * min(1, penetration)
-                }
-            }
-            target *= additiveScale
-            // Low-pass the target so a discrete geometry test or a stepped
-            // VMD curve cannot produce frame-to-frame target jumps.
-            node.smoothedTarget += (target - node.smoothedTarget) * min(1, dt * 26)
-            target = node.smoothedTarget
-
-            var rotAxis = simd_cross(axis, down)
-            if simd_length(rotAxis) < 0.0001 {
-                rotAxis = simd_cross(axis, SIMD3<Float>(0, 0, 1))
-                if simd_length(rotAxis) < 0.0001 { rotAxis = SIMD3<Float>(1, 0, 0) }
-            }
-            rotAxis = simd_normalize(rotAxis)
-
-            // Spring-damper integration (semi-implicit Euler). Stiffness sets
-            // the pull toward the gravity target and damping is normalised
-            // against the spring so it stays stable at any frame rate.
-            let substeps = max(1, min(4, settings.substeps))
-            let h = fixedStep / Float(substeps)
-            let k = 6.0 + stiffness * 18.0
-            let critical = 2.0 * sqrtf(k)
-            let dampingFactor = critical * (0.35 + damping * 1.1)
-            if stepCount > 0 {
-                for _ in 0..<(stepCount * substeps) {
-                    let acceleration = (target - node.angle) * k - node.velocity * dampingFactor
-                    node.velocity = max(-14, min(14, node.velocity + acceleration * h))
-                    node.angle += node.velocity * h
-                }
-            }
-            let hardLimit = mmdRadians(node.maxAngle) * 1.35
-            node.angle = max(-hardLimit, min(hardLimit, node.angle))
-            chainBones[nodeIndex] = node
-
-            let localAxis = worldQuat.inverse.act(rotAxis)
-            let localLength = simd_length(localAxis)
-            guard localLength > 0.0001 else { continue }
-            let offsetRotation = simd_quatf(angle: node.angle, axis: localAxis / localLength)
-            var animation = result[index] ?? MMDBoneAnimation()
-            animation.rotation = animation.rotation * offsetRotation
-            result[index] = animation
         }
 
         if settings.mode == .rigid && !rigidStates.isEmpty {
-            stepRigidBodies(model: model, settings: settings, dt: dt)
+            if advance { stepRigidBodies(model: model, settings: settings, dt: dt) }
             applyRigidBodies(to: &result, model: model, settings: settings)
         }
         return result
     }
 
-    // MARK: - Rigid bodies
+    private func evaluate(animations: [Int: MMDBoneAnimation]) {
+        for index in topoOrder {
+            let parent = parentIndices[index]
+            let animation = animations[index] ?? MMDBoneAnimation()
+            let parentPos = parent >= 0 ? worldPos[parent] : .zero
+            let parentQuat = parent >= 0 ? worldQuat[parent] : mmdIdentityQuaternion
+            worldPos[index] = parentPos + parentQuat.act(restLocal[index] + animation.position)
+            worldQuat[index] = parentQuat * animation.rotation
+        }
+    }
+
+    // MARK: - Cloth integration
+
+    private func stepCloth(settings: MMDPhysicsSettings, dt: Float, time: Float) {
+        // dt == 0 means "emit the current pose without integrating". The
+        // renderer asks for the same instant again whenever a frame is redrawn
+        // (paused playback, a second draw pass), and re-emitting is the only
+        // way the cloth does not snap back to its rest shape.
+        let advance = dt > 0.00001
+        let substeps = advance ? max(1, min(4, settings.substeps)) : 1
+        let h = advance ? max(0.0005, min(0.02, dt / Float(substeps))) : 0
+        let gravity = max(0, settings.gravity)
+        let stiffness = max(0.02, settings.stiffness)
+        let damping = max(0.05, settings.damping)
+        let wind = max(0, settings.wind)
+        let inertia = max(0, settings.inertia)
+        let down = SIMD3<Float>(0, -1, 0)
+        let windDir = SIMD3<Float>(
+            sinf(time * 1.7) * 0.7 + sinf(time * 0.43) * 0.3,
+            sinf(time * 0.9) * 0.15,
+            cosf(time * 1.31) * 0.7 + cosf(time * 0.37) * 0.3
+        ).unit
+
+        for _ in 0..<substeps {
+            for index in clothNodes.indices {
+                var node = clothNodes[index]
+                let parent = node.parentBone
+                let anchor = parent >= 0 ? worldPos[parent] : .zero
+                let anchorQuat = parent >= 0 ? worldQuat[parent] : mmdIdentityQuaternion
+                // Where the bone would point if it were welded to its parent.
+                // Gravity and the rest spring both act relative to this, so a
+                // skirt still hangs correctly after the body turns.
+                let restDirNow = anchorQuat.act(node.restDir).unit
+                guard restDirNow != .zero else { continue }
+
+                if advance {
+                    // Gravity torque. `cross(dir, down)` is the lever arm: zero
+                    // when the bone already hangs straight down, maximal when it
+                    // is horizontal, which is how a pendulum behaves.
+                    let gravityGain = 26 * gravity * node.gravityScale
+                    var torque = simd_cross(node.dir, down) * gravityGain
+
+                    if wind > 0.001 && windDir != .zero {
+                        torque += simd_cross(node.dir, windDir) * (22 * wind * node.gravityScale)
+                    }
+
+                    // Shape memory. Without it a sleeve never returns to its
+                    // authored silhouette; too much and the cloth reads as
+                    // cardboard, which is the exact complaint this replaces.
+                    let restGain = 30 * stiffness * node.stiffness * node.angleScale
+                    torque += simd_cross(node.dir, restDirNow) * restGain
+
+                    // Damping is normalised against the spring so the solver
+                    // stays stable at any stiffness. 0.62 keeps a little
+                    // overshoot, which is what sells cloth as cloth.
+                    let omega0 = sqrtf(max(0.001, gravityGain + restGain))
+                    let dampingFactor = 2 * omega0 * (0.18 + damping * 0.62) * node.stiffness
+                    torque -= node.omega * dampingFactor
+
+                    // Body drag: the anchor's velocity pushes the link, which is
+                    // what makes a skirt trail when the character walks.
+                    if inertia > 0.001, parent >= 0,
+                       parent < skeletonPos.count, parent < lastSkeletonPos.count {
+                        // Velocity of the *skeleton* anchor, not of the cloth
+                        // link, otherwise a skirt would feed its own swing back
+                        // in and slowly build up an oscillation.
+                        let anchorVelocity = skeletonPos[parent] - lastSkeletonPos[parent]
+                        if simd_length(anchorVelocity) > 1e-6 {
+                            torque += simd_cross(node.dir, -anchorVelocity) * (inertia * 6)
+                        }
+                    }
+
+                    node.omega += torque * h
+                    let speed = simd_length(node.omega)
+                    if speed > 45 { node.omega *= 45 / speed }
+
+                    if speed > 1e-5 {
+                        let rotation = simd_quatf(angle: speed * h, axis: node.omega / speed)
+                        node.dir = rotation.act(node.dir).unit
+                    }
+                    if node.dir == .zero { node.dir = restDirNow }
+
+                    // Cone limit against the parent-driven rest direction.
+                    let limit = max(0.03, mmdRadians(settings.maxAngle) * node.angleScale)
+                    let deviation = acosf(max(-1, min(1, simd_dot(node.dir, restDirNow))))
+                    if deviation > limit {
+                        let axis = simd_cross(restDirNow, node.dir)
+                        if simd_length(axis) > 1e-5 {
+                            node.dir = simd_quatf(angle: limit, axis: axis.unit).act(restDirNow).unit
+                        } else {
+                            node.dir = restDirNow
+                        }
+                        // Kill the outward component so the link rests on the
+                        // cone instead of buzzing against it every step.
+                        let normal = simd_cross(restDirNow, node.dir).unit
+                        let outward = simd_dot(node.omega, normal)
+                        if abs(outward) > 1e-5 { node.omega -= normal * outward }
+                    }
+
+                    if settings.collision {
+                        var position = anchor + node.dir * node.length
+                        position = resolveCollisions(position, anchor: anchor, length: node.length)
+                        let resolved = position - anchor
+                        let magnitude = simd_length(resolved)
+                        if magnitude > 1e-5 { node.dir = resolved / magnitude }
+                    }
+                }
+
+                worldPos[node.bone] = anchor + node.dir * node.length
+                let delta = quatBetween(anchorQuat.act(node.restDir), node.dir)
+                worldQuat[node.bone] = quatNormalize(delta * anchorQuat)
+                clothNodes[index] = node
+            }
+        }
+    }
+
+    private func distanceToSegment(_ p: SIMD3<Float>, _ a: SIMD3<Float>, _ b: SIMD3<Float>) -> Float {
+        let axis = b - a
+        let lengthSquared = simd_dot(axis, axis)
+        guard lengthSquared > 1e-8 else { return simd_length(p - a) }
+        let t = max(0, min(1, simd_dot(p - a, axis) / lengthSquared))
+        return simd_length(p - (a + axis * t))
+    }
+
+    private func resolveCollisions(_ position: SIMD3<Float>, anchor: SIMD3<Float>, length: Float) -> SIMD3<Float> {
+        var point = position
+        let minDistance = max(1e-4, length * 0.15)
+        for capsule in capsules {
+            let a = capsule.boneA >= 0 ? worldPos[capsule.boneA] : anchor
+            let b = capsule.boneB >= 0 ? worldPos[capsule.boneB] : a
+            // If the link hangs from a point already inside (or right next to)
+            // the capsule, pushing it out would fling the whole skirt open
+            // instead of stopping it from clipping. Skip that capsule.
+            if distanceToSegment(anchor, a, b) < capsule.radius * 1.15 { continue }
+            let axis = b - a
+            let axisLengthSquared = simd_dot(axis, axis)
+            let t: Float
+            if axisLengthSquared < 1e-8 {
+                t = 0
+            } else {
+                t = max(0, min(1, simd_dot(point - a, axis) / axisLengthSquared))
+            }
+            let closest = a + axis * t
+            let offset = point - closest
+            let distance = simd_length(offset)
+            let radius = capsule.radius
+            guard distance < radius else { continue }
+            let normal = distance > 1e-5 ? offset / distance : SIMD3<Float>(0, 0, 1)
+            let target = closest + normal * radius * 1.02
+            let direction = target - anchor
+            // Only accept the push when it actually moves the tip away.
+            if simd_length(direction) > minDistance,
+               simd_dot(direction, point - anchor) > 0 {
+                point = anchor + direction.unit * length
+            }
+        }
+        // Floor. Bones below the ground plane are the most obvious cloth bug.
+        if point.y < floorY + modelHeight * 0.002 {
+            point.y = floorY + modelHeight * 0.002
+            let direction = point - anchor
+            if simd_length(direction) > 1e-5 {
+                point = anchor + direction.unit * length
+            }
+        }
+        return point
+    }
+
+    // MARK: - Rigid integration
 
     private func stepRigidBodies(model: PMXModel, settings: MMDPhysicsSettings, dt: Float) {
         let substeps = max(1, min(4, settings.substeps))
         let subDt = dt / Float(substeps)
-        let gravity = SIMD3<Float>(0, -max(0, settings.gravity) * 1.7, 0)
-        let floorY = model.bounds.minPoint.y
+        let gravity = SIMD3<Float>(0, -max(0, settings.gravity) * 9.8 * 0.9, 0)
 
         for _ in 0..<substeps {
             for index in rigidStates.indices {
                 var state = rigidStates[index]
                 let mass = max(0.001, state.body.mass)
                 var force = gravity * mass
-                // Pull back to the authored body position. Without this a body
-                // drifts away until the 1.2-unit clamp is reached.
-                force += (state.restPosition - state.position) * (14.0 * mass)
-                // Damped angular inertia from body rotation.
-                force.x -= state.velocity.x * state.body.linearDamping * mass * 18
-                force.y -= state.velocity.y * state.body.linearDamping * mass * 18
-                force.z -= state.velocity.z * state.body.linearDamping * mass * 18
 
-                // Joint springs pull dynamic bodies toward their anchored rest
-                // offset. Bodies not referenced by joints keep their shape.
+                // A weak pull toward the authored position keeps a badly joined
+                // body from drifting away. The old value (14 x mass) turned the
+                // whole skirt into a stiff rubber band, which is why the rigid
+                // mode looked frozen.
+                force += (state.restPosition - state.position) * (1.6 * mass)
+
+                force -= state.velocity * state.body.linearDamping * mass * 2.4
+
                 for joint in joints {
-                    guard joint.a < model.rigidBodies.count, joint.b < model.rigidBodies.count else { continue }
-                    let isA = rigidStateByBody[joint.a] == index
-                    let isB = rigidStateByBody[joint.b] == index
+                    let isA = rigidStateByBody[joint.bodyA] == index
+                    let isB = rigidStateByBody[joint.bodyB] == index
                     guard isA || isB else { continue }
-                    let otherIndex = isA ? joint.b : joint.a
-                    let otherPosition = model.rigidBodies[otherIndex].position
-                    let anchor = otherPosition + (isA ? joint.offset : -joint.offset)
-                    let stiffnessVector = SIMD3<Float>(abs(joint.spring.x), abs(joint.spring.y), abs(joint.spring.z))
-                    let strength = 32.0 / (1.0 + stiffnessVector.x + stiffnessVector.y + stiffnessVector.z)
-                    let delta = anchor - state.position
-                    force += delta * strength * mass
-                    let angularThis = state.angularVelocity
-                    let springRot = (abs(joint.springRotation.x) + abs(joint.springRotation.y) + abs(joint.springRotation.z)) / 3
-                    state.angularVelocity -= angularThis * min(0.95, 0.06 + springRot * 0.02)
+                    let otherIndex = isA ? joint.bodyB : joint.bodyA
+                    guard otherIndex >= 0, otherIndex < model.rigidBodies.count else { continue }
+                    let other = rigidStates[rigidStateByBody[otherIndex] ?? index]
+                    let anchor = other.position + (isA ? joint.offset : -joint.offset)
+                    // PMX spring values are 0...∞; 0 means "rigid". Map them so
+                    // a fully rigid joint is strong and a soft one still holds.
+                    let springSum = abs(joint.springPosition.x) + abs(joint.springPosition.y)
+                        + abs(joint.springPosition.z)
+                    let strength = 90 / (1 + springSum * 4)
+                    force += (anchor - state.position) * strength * mass
                 }
 
                 state.velocity += force / mass * subDt
                 let speed = simd_length(state.velocity)
-                if speed > 8 { state.velocity *= 8 / speed }
+                if speed > 6 { state.velocity *= 6 / speed }
                 state.position += state.velocity * subDt
+
+                // Positional joint projection: keeps links from stretching
+                // without relying on a stiff force.
+                for joint in joints {
+                    let isA = rigidStateByBody[joint.bodyA] == index
+                    let isB = rigidStateByBody[joint.bodyB] == index
+                    guard isA || isB else { continue }
+                    let otherIndex = isA ? joint.bodyB : joint.bodyA
+                    guard otherIndex >= 0, otherIndex < model.rigidBodies.count,
+                          let otherSlot = rigidStateByBody[otherIndex] else { continue }
+                    let other = rigidStates[otherSlot]
+                    let anchor = other.position + (isA ? joint.offset : -joint.offset)
+                    let delta = state.position - anchor
+                    let distance = simd_length(delta)
+                    let maxDeviation = max(0.02, modelHeight * 0.02)
+                    if distance > maxDeviation {
+                        state.position = anchor + delta / distance * maxDeviation
+                    }
+                }
+
                 let angularSpeed = simd_length(state.angularVelocity)
                 if angularSpeed > 0.0001 {
                     let step = min(0.35, angularSpeed * subDt)
@@ -1062,8 +1342,8 @@ final class MMDSpringPhysics {
                         let a = rigidStates[i]
                         let b = rigidStates[j]
                         if a.body.group == b.body.group { continue }
-                        let maskForB = UInt16(1) << UInt16(b.body.group)
-                        let maskForA = UInt16(1) << UInt16(a.body.group)
+                        let maskForB = UInt16(1) << UInt16(min(15, b.body.group))
+                        let maskForA = UInt16(1) << UInt16(min(15, a.body.group))
                         if (a.body.collisionMask & maskForB) == 0 { continue }
                         if (b.body.collisionMask & maskForA) == 0 { continue }
                         let ra = max(a.body.size.x, max(a.body.size.y, a.body.size.z))
@@ -1091,26 +1371,30 @@ final class MMDSpringPhysics {
     private func applyRigidBodies(to animations: inout [Int: MMDBoneAnimation], model: PMXModel,
                                   settings: MMDPhysicsSettings) {
         var applied: Set<Int> = []
+        let limit = max(0.05, min(0.35, settings.maxAngle / 120))
         for state in rigidStates {
             let boneIndex = state.body.boneIndex
-            guard boneIndex >= 0 && boneIndex < model.bones.count,
+            guard boneIndex >= 0 && boneIndex < boneCount,
                   !Self.isHumanoidDeformBone(model.bones[boneIndex]),
                   !ikBones.contains(boneIndex),
                   applied.insert(boneIndex).inserted else { continue }
+
             var deltaPosition = state.position - state.restPosition
             let length = simd_length(deltaPosition)
-            // Cloth bodies can drift when joints are authored badly; clamping
-            // the feedback keeps one runaway body from dragging a whole skirt.
-            let limit = max(0.10, min(0.40, settings.maxAngle / 90))
             if length > limit { deltaPosition *= limit / length }
-            let deltaRotation = state.rotation * state.restRotation.inverse
+
+            let parent = parentIndices[boneIndex]
+            let parentQuat = parent >= 0 ? worldQuat[parent] : mmdIdentityQuaternion
             var animation = animations[boneIndex] ?? MMDBoneAnimation()
-            let parent = model.bones[boneIndex].parentIndex
-            let parentRotation = parent >= 0 ? (animations[parent]?.rotation ?? mmdIdentityQuaternion)
-                                             : mmdIdentityQuaternion
-            animation.position += parentRotation.inverse.act(deltaPosition)
-            let localRotation = parentRotation.inverse * deltaRotation * parentRotation
-            animation.rotation = animation.rotation * localRotation
+            animation.position += parentQuat.inverse.act(deltaPosition)
+
+            // PMX bones have no rest rotation, so the world delta maps straight
+            // into the parent's frame. The old code conjugated by the parent's
+            // *local* rotation, which rotated the whole offset by its own
+            // inverse and made cloth bodies swing the wrong way.
+            let deltaRotation = state.rotation * state.restRotation.inverse
+            let local = parentQuat.inverse * deltaRotation * parentQuat
+            animation.rotation = quatNormalize(animation.rotation * local)
             animations[boneIndex] = animation
         }
     }
@@ -1121,14 +1405,7 @@ final class MMDSpringPhysics {
     /// the VMD pose is straight. Keep physics feedback out of the core rig.
     private static func isHumanoidDeformBone(_ bone: PMXBone) -> Bool {
         let text = (bone.name + " " + bone.nameEn).lowercased()
-        let markers = ["センター", "center", "上半身", "下半身", "upperbody", "upper_body",
-                       "lowerbody", "lower_body", "spine", "chest", "torso", "hip", "hips",
-                       "pelvis", "waist", "腰", "体幹", "torso", "root", "頭", "head",
-                       "首", "neck", "肩", "shoulder", "腕", "arm", "ひじ", "elbow",
-                       "手首", "wrist", "hand", "指", "finger", "thumb", "足", "leg",
-                       "脚", "もも", "thigh", "ひざ", "knee", "calf", "shin", "すね",
-                       "足首", "ankle", "かかと", "heel", "foot", "toe", "つま先"]
-        return markers.contains(where: { text.contains($0) })
+        return humanoidMarkers.contains(where: { text.contains($0) })
     }
 }
 
