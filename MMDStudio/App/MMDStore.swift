@@ -22,8 +22,7 @@ private struct MMDLibraryMetadata: Codable {
 struct MMDModelEntry: Identifiable, Hashable {
     /// Stable identity: the PMX path relative to the model library.
     let id: String
-    /// Recomputed when a package is classified: props are renamed to
-    /// `角色-道具` so they read as children of their character.
+    /// Full name as the model or its file spells it, e.g. `蕾米埃尔-白`.
     var displayName: String
     let pmxPath: String
     /// Top-level imported folder. Several PMX models may share this folder.
@@ -33,12 +32,20 @@ struct MMDModelEntry: Identifiable, Hashable {
     let relativePath: String
     var role: MMDModelRole = .character
     var groupID: UUID?
-    /// Character this model belongs to. Props imported in the same archive get
-    /// folded under their character so the library reads like folders instead
-    /// of one flat pile of PMX files.
-    var ownerName: String?
+    /// Folder this model lives in: the character's name. Every outfit of one
+    /// character shares it even when the outfits arrived in separate archives,
+    /// which is what turns 白/黑/泳装 into one folder instead of three.
+    var characterName: String?
+    /// Outfit or prop suffix shown inside that folder: 白 / 泳装 / 武器.
+    var variantName: String?
 
     var folderName: String { packageURL.lastPathComponent }
+    /// Line text inside the character folder. A folder that only holds the
+    /// character itself hides its header, so this doubles as the list title.
+    var rowName: String {
+        if let variantName, !variantName.isEmpty { return variantName }
+        return characterName ?? displayName
+    }
 }
 
 struct MMDImportResult {
@@ -69,7 +76,11 @@ final class MMDStore: ObservableObject {
     private var metadataURL: URL { libraryURL.appendingPathComponent(".mmd-library.json") }
 
     init() {
-        importAllModels = UserDefaults.standard.bool(forKey: Self.importAllModelsKey)
+        // Multi-character archives (绳匠 → 玲 + 哲) used to import only the
+        // largest PMX, which reads as "导入失败：少了一个角色". Now that models
+        // are filed by character, importing the whole archive is safe.
+        let storedAll = UserDefaults.standard.object(forKey: Self.importAllModelsKey)
+        importAllModels = storedAll == nil ? true : UserDefaults.standard.bool(forKey: Self.importAllModelsKey)
         autoAttachPackageModels = UserDefaults.standard.bool(forKey: Self.autoAttachKey)
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
@@ -127,14 +138,14 @@ final class MMDStore: ObservableObject {
                                         role: Self.isAccessoryPath(relative) ? .accessory : .character,
                                         groupID: packageGroups[packageName]))
         }
-        result = Self.classifyPackages(result)
+        result = Self.classify(result)
         result.sort { lhs, rhs in
-            let left = lhs.ownerName ?? lhs.displayName
-            let right = rhs.ownerName ?? rhs.displayName
+            let left = lhs.characterName ?? lhs.displayName
+            let right = rhs.characterName ?? rhs.displayName
             if left != right { return left.localizedStandardCompare(right) == .orderedAscending }
             // The character row goes above its own props.
             if lhs.role != rhs.role { return lhs.role == .character }
-            return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+            return lhs.rowName.localizedStandardCompare(rhs.rowName) == .orderedAscending
         }
         entries = result
         MMDLog.shared.info("Library refreshed: \(result.count) model(s)")
@@ -366,8 +377,12 @@ final class MMDStore: ObservableObject {
                     }
                     MMDLog.shared.info("Copied folder: \(contents.count) top-level item(s)")
                 } else if extensionName == "zip" {
-                    let extracted = try MMDZipArchive.extract(url: source, to: destination)
-                    MMDLog.shared.info("ZIP extracted: \(extracted) file(s) -> \(destination.path)")
+                    let skipped = try MMDZipArchive.extract(url: source, to: destination)
+                    MMDLog.shared.info("ZIP extracted -> \(destination.path), skipped=\(skipped.count)")
+                    if !skipped.isEmpty {
+                        MMDLog.shared.warning("ZIP items that could not be read: " +
+                                              skipped.prefix(6).joined(separator: ", "))
+                    }
                 } else if ["pmx", "pmd"].contains(extensionName) {
                     try fileManager.copyItem(at: source,
                                              to: destination.appendingPathComponent(source.lastPathComponent))
@@ -474,109 +489,30 @@ final class MMDStore: ObservableObject {
         }
     }
 
-    // MARK: - Package classification
+    // MARK: - Character grouping
 
-    /// One archive usually holds one character plus a handful of weapons and
-    /// props, all with names like `weapon.pmx`, `武器.pmx`, `body_01.pmx`.
-    /// Presenting those as siblings is why the library looked like a junk
-    /// drawer. Group them: character first, props named `角色-道具`.
-    private static func classifyPackages(_ input: [MMDModelEntry]) -> [MMDModelEntry] {
+    /// Each model is filed under its own character instead of its archive.
+    /// See `MMDCharacterNaming` for why: archives are named after series
+    /// (绳匠 holds 玲 and 哲) and one character's outfits often arrive in
+    /// several archives (蕾米埃尔 白/黑/泳装).
+    private static func classify(_ input: [MMDModelEntry]) -> [MMDModelEntry] {
+        let namingInputs = input.map {
+            MMDCharacterNaming.Input(id: $0.id,
+                                     displayName: $0.displayName,
+                                     pmxPath: $0.pmxPath,
+                                     packagePath: $0.packageURL.path,
+                                     relativePath: $0.relativePath)
+        }
+        let outputs = MMDCharacterNaming.classify(namingInputs)
         var result = input
-        let byPackage = Dictionary(grouping: input.indices, by: { input[$0].packageURL.path })
-        for (_, indices) in byPackage where indices.count > 1 {
-            let characters = indices.filter { input[$0].role == .character }
-            guard !characters.isEmpty else { continue }
-
-            for index in indices {
-                let entry = input[index]
-                guard let owner = ownerModel(for: entry, among: characters, all: input) else { continue }
-                if owner.id == entry.id {
-                    result[index].ownerName = entry.displayName
-                    continue
-                }
-                let label = propLabel(for: entry, character: owner, all: input)
-                result[index].ownerName = owner.displayName
-                // "菲欧妮皮肤" + "武器" reads badly; the folder keeps the full
-                // name, the row uses the short one: 菲欧妮-武器.
-                let prefix = shortCharacterName(owner.displayName)
-                if !label.isEmpty, !prefix.hasSuffix(label) {
-                    result[index].displayName = "\(prefix)-\(label)"
-                }
-            }
+        for index in result.indices where index < outputs.count {
+            let output = outputs[index]
+            result[index].characterName = output.characterName
+            result[index].variantName = output.variantName
+            result[index].role = (output.isProp || isAccessoryPath(result[index].relativePath))
+                ? .accessory : .character
         }
         return result
-    }
-
-    private static func ownerModel(for entry: MMDModelEntry,
-                                   among characters: [Int],
-                                   all: [MMDModelEntry]) -> MMDModelEntry? {
-        let path = entry.relativePath.lowercased()
-        let directory = entry.assetDirectory.standardizedFileURL.path + "/"
-
-        // 1. A prop stored in the same sub-folder as a character belongs to it.
-        let sameFolder = characters.filter {
-            let candidate = all[$0].assetDirectory.standardizedFileURL.path + "/"
-            return directory.hasPrefix(candidate) && candidate != directory
-        }
-        if sameFolder.count == 1, let index = sameFolder.first { return all[index] }
-
-        // 2. The character name appears in the prop's path (common for rips
-        //    that keep `菲欧尼/武器/剑.pmx` together).
-        for index in characters {
-            let name = all[index].displayName.lowercased()
-            if name.count >= 2 && path.contains(name) { return all[index] }
-        }
-
-        // 3. Only one character in the archive: everything else is its prop.
-        if characters.count == 1, let index = characters.first { return all[index] }
-
-        // 4. Several entries but one name — the same model exported twice
-        //    (with and without collision, for example). Props still belong to
-        //    that character.
-        let distinctNames = Set(characters.map { all[$0].displayName })
-        if distinctNames.count == 1, let index = characters.first { return all[index] }
-
-        // 5. Otherwise fall back to the largest model: in a mixed archive that
-        //    is the character, and a prop attached to the wrong sibling is
-        //    still better than a prop floating on its own.
-        func fileSize(_ index: Int) -> Int {
-            let url = URL(fileURLWithPath: all[index].pmxPath)
-            return (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        }
-        let biggest = characters.max { fileSize($0) < fileSize($1) }
-        return biggest.map { all[$0] }
-    }
-
-    private static func shortCharacterName(_ name: String) -> String {
-        var value = name
-        for suffix in ["皮肤", "模型", "本体", "角色", "（正常版）", "(正常版)"] where value.hasSuffix(suffix) {
-            value = String(value.dropLast(suffix.count)).trimmingCharacters(in: .whitespaces)
-        }
-        return value.isEmpty ? name : value
-    }
-
-    private static func propLabel(for entry: MMDModelEntry,
-                                  character: MMDModelEntry,
-                                  all: [MMDModelEntry]) -> String {
-        var stem = URL(fileURLWithPath: entry.pmxPath).deletingPathExtension().lastPathComponent
-        if stem.unicodeScalars.contains(where: { (0x0300...0x036F).contains($0.value) }),
-           let repaired = MMDZipArchive.repairedFilename(stem) {
-            stem = repaired
-        }
-        for token in [character.displayName, shortCharacterName(character.displayName),
-                      entry.folderName, entry.packageURL.lastPathComponent]
-        where token.count >= 2 {
-            if stem.lowercased().hasPrefix(token.lowercased()) {
-                stem = String(stem.dropFirst(token.count))
-            }
-        }
-        stem = stem.replacingOccurrences(of: "_", with: " ")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-—·. ").union(.whitespaces))
-        if stem.isEmpty || stem.lowercased() == character.displayName.lowercased() {
-            stem = entry.displayName
-        }
-        if stem.count > 20 { stem = String(stem.prefix(20)) }
-        return stem
     }
 
     // MARK: - Helpers
@@ -634,31 +570,22 @@ final class MMDStore: ObservableObject {
     }
 
     private static func friendlyDisplayName(pmx: URL, packageName: String) -> String {
-        if let data = try? Data(contentsOf: pmx, options: [.mappedIfSafe]),
-           let headerName = (pmx.pathExtension.lowercased() == "pmd"
-                             ? PMDParser.readDisplayName(data: data)
-                             : PMXParser.readDisplayName(data: data)) {
-            let trimmed = headerName.trimmingCharacters(in: .whitespacesAndNewlines)
-            let generic: Set<String> = ["model", "mesh", "body", "character", "mmd", "main", "untitled", "pmx", "default", "モデル"]
-            if !trimmed.isEmpty && !generic.contains(trimmed.lowercased()) {
-                return trimmed
-            }
+        var header = ""
+        if let data = try? Data(contentsOf: pmx, options: [.mappedIfSafe]) {
+            let raw = pmx.pathExtension.lowercased() == "pmd"
+                ? PMDParser.readDisplayName(data: data)
+                : PMXParser.readDisplayName(data: data)
+            header = raw ?? ""
         }
-        let stem = pmx.deletingPathExtension().lastPathComponent
+        var file = pmx.deletingPathExtension().lastPathComponent
         // If the archive stored a CP1252/Latin-1 interpretation of a CJK
-        // filename, macOS exposes combining marks such as I+U+0302. Do not
-        // show that garbage in the library; the package name is a better
-        // fallback until the user re-imports the archive.
-        if stem.unicodeScalars.contains(where: { (0x0300...0x036F).contains($0.value) }) {
-            return packageName
+        // filename, macOS exposes combining marks such as I+U+0302.
+        if file.unicodeScalars.contains(where: { (0x0300...0x036F).contains($0.value) }) {
+            file = MMDZipArchive.repairedFilename(file) ?? ""
         }
-        if let repaired = MMDZipArchive.repairedFilename(stem), repaired != stem {
-            return repaired
-        }
-        let generic: Set<String> = ["model", "mesh", "body", "character", "mmd", "main", "untitled", "pmx", "default"]
-        if generic.contains(stem.lowercased()) || stem.isEmpty {
-            return packageName
-        }
-        return stem.replacingOccurrences(of: "_", with: " ")
+        return MMDCharacterNaming.preferredDisplayName(header: header,
+                                                       fileName: file,
+                                                       packageName: packageName)
     }
+
 }

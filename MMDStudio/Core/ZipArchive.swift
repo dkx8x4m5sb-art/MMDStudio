@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(CoreFoundation)
 import CoreFoundation
+#endif
 
 /// A small, dependency-free ZIP reader used by the model importer.
 ///
@@ -34,23 +36,67 @@ enum MMDZipArchive {
         var uncompressedSize: UInt64
         var localHeaderOffset: UInt64
         var isDirectory: Bool
+        /// Set only by the local-header recovery pass, where the payload end
+        /// has to be guessed from the next signature instead of a size field.
+        var dataEnd: Int? = nil
+        /// Streaming archives write the CRC into a trailing descriptor, so the
+        /// local header may still hold 0 and the check must be skipped.
+        var skipCRC = false
     }
 
-    static func extract(url: URL, to destination: URL) throws {
-        let data = try Data(contentsOf: url, options: [.mappedIfSafe])
-        try extract(data: data, to: destination)
+    /// Returns the names that could not be decoded, so the caller can log them
+    /// instead of failing an otherwise usable import.
+    @discardableResult
+    static func extract(url: URL, to destination: URL) throws -> [String] {
+        let declared = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let data: Data
+        do {
+            data = try Data(contentsOf: url, options: [.mappedIfSafe])
+        } catch {
+            throw ZipError.invalidArchive("无法读取文件（\(declared) 字节）：\(error.localizedDescription)")
+        }
+        // iCloud keeps a placeholder until the file is downloaded; reading it
+        // then yields a short buffer and looks exactly like a corrupt ZIP.
+        if declared > 0, data.count != declared {
+            throw ZipError.invalidArchive("只读到 \(data.count)/\(declared) 字节，文件可能还在 iCloud 下载中，请等下载完成再试")
+        }
+        return try extract(data: data, to: destination)
     }
 
-    static func extract(data: Data, to destination: URL) throws {
+    @discardableResult
+    static func extract(data: Data, to destination: URL) throws -> [String] {
         let bytes = [UInt8](data)
-        guard bytes.count >= 22 else { throw ZipError.truncated }
-        let entries = try readCentralDirectory(bytes)
+        guard bytes.count >= 22 else {
+            let hint = formatHint(bytes).map { "；\($0)" } ?? ""
+            throw ZipError.invalidArchive("文件只有 \(bytes.count) 字节，不是完整的压缩包\(hint)")
+        }
+        let entries: [Entry]
+        do {
+            entries = try readCentralDirectory(bytes)
+        } catch {
+            // No readable end-of-central-directory: either the file is not a
+            // ZIP at all, or it is a streaming archive whose trailer was lost.
+            // Walking the local headers recovers everything the payload still
+            // holds, which is the difference between "导入失败" and a usable
+            // model for a truncated download.
+            if let recovered = try? scanLocalHeaders(bytes), !recovered.isEmpty {
+                entries = recovered
+            } else if let hint = formatHint(bytes) {
+                throw ZipError.invalidArchive(hint)
+            } else {
+                throw error
+            }
+        }
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
 
+        var skipped = [String]()
+        var lastFailure: Error?
         for entry in entries {
-            let relativePath = try safePath(entry.name)
-            guard !relativePath.isEmpty else { continue }
+            guard let relativePath = try? safePath(entry.name), !relativePath.isEmpty else {
+                skipped.append(entry.name)
+                continue
+            }
             let outputURL = destination.appendingPathComponent(relativePath)
             if entry.isDirectory {
                 try fileManager.createDirectory(at: outputURL, withIntermediateDirectories: true)
@@ -58,12 +104,138 @@ enum MMDZipArchive {
             }
             try fileManager.createDirectory(at: outputURL.deletingLastPathComponent(),
                                             withIntermediateDirectories: true)
-            let payload = try extractPayload(entry: entry, bytes: bytes)
-            if entry.uncompressedSize > 0, crc32(payload) != entry.crc {
-                throw ZipError.checksumMismatch(relativePath)
+            let payload: Data
+            do {
+                payload = try extractPayload(entry: entry, bytes: bytes)
+                if !entry.skipCRC, entry.uncompressedSize > 0, crc32(payload) != entry.crc {
+                    throw ZipError.checksumMismatch(relativePath)
+                }
+            } catch {
+                // A single bad record must not cost the whole archive: the PMX
+                // and its textures are usually intact while one trailing
+                // thumbnail is not. A fully broken archive still fails below.
+                skipped.append(entry.name)
+                lastFailure = error
+                continue
             }
             try payload.write(to: outputURL, options: [.atomic])
         }
+        if skipped.count == entries.count, let lastFailure {
+            throw lastFailure
+        }
+        return skipped
+    }
+
+    // MARK: - Local header recovery
+
+    /// Rebuild the entry list from the `PK\x03\x04` records alone. Streaming
+    /// writers (some phone archivers and "保存到文件" flows) only emit local
+    /// headers plus a data descriptor, and a download cut short loses the
+    /// central directory entirely — both produce the same "找不到中央目录结尾"
+    /// failure on a perfectly readable model.
+    private static func scanLocalHeaders(_ bytes: [UInt8]) throws -> [Entry] {
+        var entries = [Entry]()
+        var cursor = 0
+        while cursor + 30 <= bytes.count {
+            guard readUInt32(bytes, cursor) == 0x0403_4B50 else {
+                cursor += 1
+                continue
+            }
+            let flags = readUInt16(bytes, cursor + 6)
+            let method = readUInt16(bytes, cursor + 8)
+            let crc = readUInt32(bytes, cursor + 14)
+            let compressed = UInt64(readUInt32(bytes, cursor + 18))
+            let uncompressed = UInt64(readUInt32(bytes, cursor + 22))
+            let nameLength = Int(readUInt16(bytes, cursor + 26))
+            let extraLength = Int(readUInt16(bytes, cursor + 28))
+            let nameStart = cursor + 30
+            let dataStart = nameStart + nameLength + extraLength
+            guard nameLength > 0, nameLength < 4096, dataStart <= bytes.count else {
+                cursor += 1
+                continue
+            }
+            let nameBytes = Array(bytes[nameStart..<(nameStart + nameLength)])
+            let name = decodeName(nameBytes, flags: flags)
+            // A real entry name is readable text. Random payload bytes that
+            // happen to spell PK\x03\x04 almost never are, so this filter is
+            // what keeps a false signature from derailing the scan.
+            guard !name.isEmpty,
+                  !name.unicodeScalars.contains(where: {
+                      CharacterSet.controlCharacters.contains($0) || $0.value == 0xFFFD
+                  }) else {
+                cursor += 1
+                continue
+            }
+            let hasDescriptor = (flags & 0x0008) != 0
+            var dataEnd: Int?
+            if compressed > 0, compressed < UInt64(bytes.count) {
+                dataEnd = dataStart + Int(compressed)
+            } else if method == 8, hasDescriptor {
+                // Size lives in the trailing descriptor we cannot trust after a
+                // truncation. Raw deflate stops at its final block, so a probe
+                // decode tells us exactly how many bytes this entry owns.
+                let probe = DeflateInflater(input: Array(bytes[dataStart...]), expectedSize: 0)
+                if (try? probe.inflate()) != nil, probe.consumedBytes > 0 {
+                    dataEnd = dataStart + probe.consumedBytes
+                } else {
+                    dataEnd = bytes.count
+                }
+            }
+            if let end = dataEnd, end > bytes.count { dataEnd = nil }
+
+            entries.append(Entry(name: name,
+                                 flags: flags,
+                                 method: method,
+                                 crc: crc,
+                                 compressedSize: compressed,
+                                 uncompressedSize: uncompressed,
+                                 localHeaderOffset: UInt64(cursor),
+                                 isDirectory: name.hasSuffix("/") || name.hasSuffix("\\"),
+                                 dataEnd: dataEnd,
+                                 skipCRC: crc == 0))
+            // Skip the payload (and its optional descriptor) before looking
+            // for the next signature; without this, compressed data that
+            // contains 0x04034b50 would be parsed as a bogus entry.
+            var next = dataEnd ?? dataStart
+            if hasDescriptor, next + 4 <= bytes.count, readUInt32(bytes, next) == 0x0807_4B50 {
+                next += 16
+            }
+            cursor = max(next, cursor + 30)
+        }
+        guard !entries.isEmpty else { throw ZipError.invalidArchive("找不到中央目录结尾") }
+        return entries
+    }
+
+    /// Explain what the file actually is. `.zip` is only a suffix; RAR and 7z
+    /// archives are routinely renamed and cannot be opened on iOS without a
+    /// third-party library, so saying so beats a generic corruption message.
+    private static func formatHint(_ bytes: [UInt8]) -> String? {
+        func matches(_ signature: [UInt8], at offset: Int = 0) -> Bool {
+            guard bytes.count >= offset + signature.count else { return false }
+            for (index, byte) in signature.enumerated() where bytes[offset + index] != byte {
+                return false
+            }
+            return true
+        }
+        if matches([0x52, 0x61, 0x72, 0x21]) {
+            return "这其实是 RAR 压缩包（只是后缀写成了 .zip）。iOS 不能直接解压 RAR，请先在「文件」里解压，再把解压出的文件夹拖进来导入"
+        }
+        if matches([0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) {
+            return "这其实是 7z 压缩包（只是后缀写成了 .zip）。请先解压成文件夹再导入"
+        }
+        if matches([0x1F, 0x8B]) {
+            return "这其实是 gzip 文件，不是 ZIP。请先解压成文件夹再导入"
+        }
+        if matches([0x42, 0x5A, 0x68]) {
+            return "这其实是 bzip2 文件，不是 ZIP。请先解压成文件夹再导入"
+        }
+        if matches([0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00]) {
+            return "这其实是 xz 文件，不是 ZIP。请先解压成文件夹再导入"
+        }
+        if matches([0x50, 0x4B]) {
+            return "压缩包里有 ZIP 记录但中央目录已损坏（多半是下载不完整）。请重新下载，或先解压成文件夹再导入"
+        }
+        return nil
     }
 
     // MARK: - Central directory
@@ -195,13 +367,15 @@ enum MMDZipArchive {
         let extraLength = Int(readUInt16(bytes, header + 28))
         let dataOffset = header + 30 + nameLength + extraLength
         guard dataOffset <= bytes.count else { throw ZipError.truncated }
-        let compressedEnd = dataOffset + Int(entry.compressedSize)
-        guard compressedEnd <= bytes.count else { throw ZipError.truncated }
+        let compressedEnd = entry.dataEnd.map { min($0, bytes.count) }
+            ?? (dataOffset + Int(entry.compressedSize))
+        guard compressedEnd >= dataOffset, compressedEnd <= bytes.count else { throw ZipError.truncated }
         let compressed = Array(bytes[dataOffset..<compressedEnd])
 
         switch entry.method {
         case 0:
-            guard UInt64(compressed.count) == entry.uncompressedSize else {
+            let expected = entry.uncompressedSize > 0 ? entry.uncompressedSize : UInt64(compressed.count)
+            guard UInt64(compressed.count) == expected else {
                 throw ZipError.invalidArchive("存储文件长度不一致：\(entry.name)")
             }
             return Data(compressed)
@@ -411,6 +585,10 @@ private final class DeflateInflater {
     private let expectedSize: Int
     private var bitPosition = 0
     private var output = [UInt8]()
+    /// Bytes of the input that belonged to the deflate stream. A streaming
+    /// entry has no size in its local header, so this is the only way to know
+    /// where its payload ends and the next record begins.
+    private(set) var consumedBytes = 0
 
     init(input: [UInt8], expectedSize: Int) {
         self.input = input
@@ -433,6 +611,7 @@ private final class DeflateInflater {
                 throw MMDZipArchive.ZipError.invalidArchive("解压数据超过标称长度")
             }
         }
+        consumedBytes = (bitPosition + 7) / 8
         if expectedSize > 0, output.count != expectedSize {
             throw MMDZipArchive.ZipError.truncated
         }

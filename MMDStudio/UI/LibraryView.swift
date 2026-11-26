@@ -42,7 +42,7 @@ struct LibraryView: View {
         var order: [String] = []
         var map: [String: [MMDModelEntry]] = [:]
         for entry in ungroupedEntries {
-            let key = entry.ownerName ?? entry.displayName
+            let key = entry.characterName ?? entry.displayName
             if map[key] == nil { order.append(key) }
             map[key, default: []].append(entry)
         }
@@ -72,7 +72,7 @@ struct LibraryView: View {
                                 .font(.system(size: 42))
                                 .foregroundStyle(.cyan)
                             Text("导入 MMD 模型").font(.headline)
-                            Text("支持 PMX、包含贴图的文件夹或 ZIP。一个压缩包保持为一组，可继续创建逻辑文件夹和批量分组。")
+                            Text("支持 PMX、包含贴图的文件夹或 ZIP。模型按角色自动归档：同一角色的不同服装放进同一个文件夹，武器与道具归到所属角色下。")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
@@ -139,7 +139,7 @@ struct LibraryView: View {
                     } header: {
                         // A lone character would otherwise repeat its own name
                         // as both the folder and the only row.
-                        if section.entries.count > 1 || section.title != section.entries.first?.displayName {
+                        if section.entries.count > 1 || section.title != section.entries.first?.rowName {
                             HStack(spacing: 6) {
                                 Label(section.title, systemImage: "folder")
                                 Text("\(section.entries.count)")
@@ -285,8 +285,8 @@ struct LibraryView: View {
                 .foregroundStyle(.cyan)
                 .frame(width: 36)
             VStack(alignment: .leading, spacing: 4) {
-                Text(entry.displayName).font(.headline).lineLimit(2)
-                Text("\(entry.folderName) · \(entry.role.rawValue)")
+                Text(entry.rowName).font(.headline).lineLimit(2)
+                Text(rowSubtitle(entry))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -313,6 +313,15 @@ struct LibraryView: View {
                     Button("删除", role: .destructive) { pendingDelete = [entry] }
                 }
         }
+    }
+
+    /// Archive folders are named `3.1蕾米埃尔_by_绝区零_<hash>`; the raw
+    /// string pushes everything else out of the row, so show the cleaned stem.
+    private func rowSubtitle(_ entry: MMDModelEntry) -> String {
+        let cleaned = MMDCharacterNaming.clean(entry.folderName)
+        let name = cleaned.isEmpty ? entry.folderName : cleaned
+        let short = name.count > 20 ? String(name.prefix(20)) + "…" : name
+        return entry.role == .accessory ? "\(short) · 配饰" : short
     }
 
     private func toggleSelection(_ entry: MMDModelEntry) {

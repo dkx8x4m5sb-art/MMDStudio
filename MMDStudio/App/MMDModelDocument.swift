@@ -60,7 +60,15 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     @Published var motionMappingNote: String = ""
     @Published var motionAudioName: String = ""
     @Published var missingTextureNames: [String] = []
-    @Published var lipSyncEnabled = true
+    /// Off by default: most models already ship mouth morphs and almost every
+    /// dance clip animates them, so an extra audio envelope reads as a
+    /// twitching jaw. The choice is remembered per app, not per model.
+    @Published var lipSyncEnabled = UserDefaults.standard.bool(forKey: MMDModelDocument.lipSyncKey) {
+        didSet { UserDefaults.standard.set(lipSyncEnabled, forKey: Self.lipSyncKey) }
+    }
+    /// True when the current clip animates the mouth itself, which is why the
+    /// audio envelope was switched off automatically.
+    @Published var lipSyncAutoDisabled = false
     private(set) var sourceURL: URL?
     private(set) var motionAudioURL: URL?
     @Published var lipSyncStrength: Float = 0.65
@@ -83,6 +91,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     private var boneIndexByName: [String: Int] = [:]
     private var mirroredBonePairs: [(source: Int, copy: Int)] = []
     private var mouthMorphIndices: [Int] = []
+
+    static let lipSyncKey = "MMDStudio.lipSyncEnabled"
 
     private static let mouthMorphNames: Set<String> = [
         "あ", "あ2", "a", "mouth", "moutha", "mouthopen",
@@ -287,6 +297,16 @@ final class MMDModelDocument: ObservableObject, Identifiable {
             throw MMDLoadError.invalidData("《\(name)》的 \(newMotion.boneTracks.count) 根骨骼名称都和当前模型对不上，" +
                                            "无法驱动这个模型。请改用与模型同一角色的动作版本。")
         }
+        // A clip that animates the mouth already owns the lip shape. Layering
+        // the audio envelope on top doubles the deformation frame by frame and
+        // is exactly the "嘴一直在抖" report. Turn it off and say why.
+        let clipDrivesMouth = !mouthMorphIndices.isEmpty
+            && motionMorphTracks.keys.contains { mouthMorphIndices.contains($0) }
+        lipSyncAutoDisabled = clipDrivesMouth
+        if clipDrivesMouth, lipSyncEnabled {
+            lipSyncEnabled = false
+            MMDLog.shared.info("Lip sync off: 《\(name)》 animates the mouth itself", category: "Motion")
+        }
         return motionBoneTracks.count
     }
 
@@ -344,6 +364,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         motionMappingNote = ""
         motionBoneTracks = [:]
         motionMorphTracks = [:]
+        lipSyncAutoDisabled = false
         springPhysics.reset()
         currentFrame = 0
         useCameraMotion = false

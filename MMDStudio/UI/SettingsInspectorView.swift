@@ -218,6 +218,11 @@ struct SettingsInspectorView: View {
 
                 Section("音频与口型") {
                     Toggle("音频驱动口型", isOn: $document.lipSyncEnabled)
+                    if document.lipSyncAutoDisabled {
+                        Text("这个动作本身带有口型表情轨道，为避免叠加抖动已自动关闭音频口型。确实要覆盖时可手动打开。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                     HStack {
                         Text("口型幅度")
                         Slider(value: lipSyncStrengthBinding, in: 0...1.2)
