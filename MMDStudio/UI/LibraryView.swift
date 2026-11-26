@@ -17,6 +17,7 @@ struct LibraryView: View {
     @State private var fileManagerEntry: MMDModelEntry?
     @State private var pendingDelete: [MMDModelEntry] = []
     @State private var showLogs = false
+    @State private var showStorage = false
     /// Presented as a full-screen cover instead of a navigation push: the
     /// canvas claims one-finger horizontal drags for orbiting, and a drag that
     /// started at the left edge was being consumed by the navigation stack's
@@ -102,6 +103,9 @@ struct LibraryView: View {
                         Toggle("导入整包内全部模型", isOn: $store.importAllModels)
                         Toggle("打开角色时自动添加配饰", isOn: $store.autoAttachPackageModels)
                         Divider()
+                        Button { showStorage = true } label: {
+                            Label("存储与文件管理", systemImage: "internaldrive")
+                        }
                         Button { showLogs = true } label: {
                             Label("运行日志", systemImage: "doc.text.magnifyingglass")
                         }
@@ -157,6 +161,9 @@ struct LibraryView: View {
             }
             .sheet(isPresented: $showLogs) {
                 LogViewer()
+            }
+            .sheet(isPresented: $showStorage) {
+                StorageManagerView().environmentObject(store)
             }
             .fullScreenCover(item: $openedEntry) { entry in
                 NavigationStack {
@@ -285,7 +292,7 @@ private struct GroupPickerView: View {
     }
 }
 
-private struct PackageFilesView: View {
+struct PackageFilesView: View {
     @ObservedObject var store: MMDStore
     let entry: MMDModelEntry
     @Environment(\.dismiss) private var dismiss
@@ -295,6 +302,11 @@ private struct PackageFilesView: View {
     @State private var showImporter = false
     @State private var showDelete = false
     @State private var errorMessage: String?
+
+    init(store: MMDStore, entry: MMDModelEntry) {
+        _store = ObservedObject(wrappedValue: store)
+        self.entry = entry
+    }
 
     var body: some View {
         NavigationStack {

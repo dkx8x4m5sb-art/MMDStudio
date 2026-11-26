@@ -40,6 +40,8 @@
 		AA0000000000000000000068 /* MMDPoseParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000069 /* MMDPoseParser.swift */; };
 		AA000000000000000000006A /* MMDModelExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000006B /* MMDModelExport.swift */; };
 		AA000000000000000000006C /* ExportStudioView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000006D /* ExportStudioView.swift */; };
+		AA00000000000000000000C2 /* MMDStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C1 /* MMDStorage.swift */; };
+		AA00000000000000000000C4 /* StorageManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000C3 /* StorageManagerView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -81,6 +83,8 @@
 		AA0000000000000000000069 /* MMDPoseParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDPoseParser.swift; sourceTree = "<group>"; };
 		AA000000000000000000006B /* MMDModelExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDModelExport.swift; sourceTree = "<group>"; };
 		AA000000000000000000006D /* ExportStudioView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExportStudioView.swift; sourceTree = "<group>"; };
+		AA00000000000000000000C1 /* MMDStorage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDStorage.swift; sourceTree = "<group>"; };
+		AA00000000000000000000C3 /* StorageManagerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageManagerView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -123,6 +127,7 @@
 				AA0000000000000000000015 /* MMDStudioApp.swift */,
 				AA0000000000000000000017 /* MMDModelDocument.swift */,
 				AA0000000000000000000019 /* MMDStore.swift */,
+				AA00000000000000000000C1 /* MMDStorage.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -174,6 +179,7 @@
 				AA0000000000000000000045 /* DocumentPicker.swift */,
 				AA000000000000000000004F /* LogViewer.swift */,
 				AA000000000000000000006D /* ExportStudioView.swift */,
+				AA00000000000000000000C3 /* StorageManagerView.swift */,
 			);
 			path = UI;
 			sourceTree = "<group>";
@@ -281,6 +287,8 @@
 				AA0000000000000000000068 /* MMDPoseParser.swift in Sources */,
 				AA000000000000000000006A /* MMDModelExport.swift in Sources */,
 				AA000000000000000000006C /* ExportStudioView.swift in Sources */,
+				AA00000000000000000000C2 /* MMDStorage.swift in Sources */,
+				AA00000000000000000000C4 /* StorageManagerView.swift in Sources */,
 				AA0000000000000000000048 /* MMDLog.swift in Sources */,
 				AA000000000000000000004A /* DDSDecoder.swift in Sources */,
 				AA000000000000000000004C /* MMDScreenRecorder.swift in Sources */,
@@ -404,7 +412,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 21;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MMDStudio/Info.plist;
@@ -413,7 +421,7 @@
 				    "$(inherited)",
 				    "@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0;
+				MARKETING_VERSION = 2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mmdstudio.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -432,7 +440,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 21;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MMDStudio/Info.plist;
@@ -441,7 +449,7 @@
 				    "$(inherited)",
 				    "@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.0;
+				MARKETING_VERSION = 2.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mmdstudio.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

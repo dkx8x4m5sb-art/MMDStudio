@@ -228,6 +228,20 @@ final class MMDStore: ObservableObject {
         refresh()
     }
 
+    /// Remove a whole imported package, used by the storage manager where the
+    /// unit of deletion is the package folder rather than a PMX entry list.
+    /// The folder's group assignment is dropped too, otherwise a later import
+    /// that reuses the name would silently land in the old group.
+    func deletePackage(at url: URL) {
+        let root = libraryURL.standardizedFileURL.path + "/"
+        guard url.standardizedFileURL.path.hasPrefix(root) else { return }
+        try? FileManager.default.removeItem(at: url)
+        packageGroups.removeValue(forKey: url.lastPathComponent)
+        saveMetadata()
+        MMDLog.shared.info("Deleted package: \(url.lastPathComponent)")
+        refresh()
+    }
+
     func open(_ entry: MMDModelEntry) throws -> MMDModelDocument {
         MMDLog.shared.info("Open model: \(entry.relativePath), assetDir=\(entry.assetDirectory.path)")
         let pmxURL = URL(fileURLWithPath: entry.pmxPath)
