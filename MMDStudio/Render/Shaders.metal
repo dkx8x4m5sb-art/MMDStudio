@@ -97,7 +97,11 @@ static inline float4 mmdSkinPosition(uint vid,
         float3 center0 = (m0 * float4(center.xyz + r0.xyz, 1.0)).xyz;
         float3 center1 = (m1 * float4(center.xyz + r1.xyz, 1.0)).xyz;
         float3 sphereCenter = w.x * center0 + w.y * center1;
-        float3x3 rotation = w.x * float3x3(m0) + w.y * float3x3(m1);
+        // Metal has no float4x4 -> float3x3 cast; take the upper-left 3x3 by
+        // columns so the translation stays behind.
+        float3x3 rot0 = float3x3(m0[0].xyz, m0[1].xyz, m0[2].xyz);
+        float3x3 rot1 = float3x3(m1[0].xyz, m1[1].xyz, m1[2].xyz);
+        float3x3 rotation = w.x * rot0 + w.y * rot1;
         float3 offset = position - center.xyz - (w.x * r0.xyz + w.y * r1.xyz);
         return float4(sphereCenter + rotation * offset, 1.0);
     }
