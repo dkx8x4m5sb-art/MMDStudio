@@ -596,7 +596,10 @@ final class MMDSpringPhysics {
     private var childIndices: [[Int]] = []
     private var restWorldPos: [SIMD3<Float>] = []
     private var worldPos: [SIMD3<Float>] = []
-    private var worldQuat: [simd_quatf] = []
+    /// World rotation straight from the animation, before any swing.
+    private var poseQuat: [simd_quatf] = []
+    /// World rotation including the swing this solver adds.
+    private var solvedQuat: [simd_quatf] = []
     private var modelHeight: Float = 20
     private var floorY: Float = 0
 
@@ -627,7 +630,7 @@ final class MMDSpringPhysics {
     // MARK: - Chain model
 
     /// What kind of thing is hanging. Controls how limp it is, how far it may
-    /// swing and how hard it is pulled back to its authored silhouette.
+    /// deviate and how hard it is pulled back to its authored silhouette.
     private enum ChainKind {
         case skirt, hair, sleeve, wing, ribbon, other
 
@@ -642,69 +645,96 @@ final class MMDSpringPhysics {
             }
         }
 
-        var gravityScale: Float {
+        /// Radians a single link may deviate from the direction the animation
+        /// gives it. The previous version allowed `maxAngle x 2.2` = 110°, and
+        /// a ribbon folded 110° at every joint is a crumpled sheet — that is
+        /// the creasing reported on hair and sashes. 10–20° per joint still
+        /// adds up to 60–120° over a whole chain.
+        var linkLimit: Float {
             switch self {
-            case .skirt: return 1.0
+            case .skirt: return 0.34
+            case .ribbon: return 0.26
+            case .sleeve: return 0.24
+            case .wing: return 0.30
+            case .hair: return 0.16
+            case .other: return 0.22
+            }
+        }
+
+        /// Radians a single link may deviate from the authored silhouette,
+        /// carried into the current pose by the chain anchor. This is the hard
+        /// bound that makes "deformation grows over time" impossible.
+        var chainLimit: Float {
+            switch self {
+            case .skirt: return 1.15
             case .ribbon: return 0.95
-            case .sleeve: return 0.9
-            case .wing: return 0.7
+            case .sleeve: return 0.80
+            case .wing: return 0.90
             case .hair: return 0.55
-            case .other: return 0.85
+            case .other: return 0.75
             }
         }
 
-        /// Position-space pull back to the rest silhouette, per 120 Hz step.
-        /// This is the number that decides "cloth" versus "cardboard": too big
-        /// and the chain never leaves its authored shape, too small and the
-        /// mesh collapses into the legs.
-        var shapePull: Float {
+        /// Angular spring pulling the link back onto the animated pose.
+        var spring: Float {
             switch self {
-            case .skirt: return 0.0042
-            case .ribbon: return 0.0030
-            case .sleeve: return 0.0055
-            case .wing: return 0.0040
-            case .hair: return 0.0072
-            case .other: return 0.0045
+            case .skirt: return 26
+            case .ribbon: return 34
+            case .sleeve: return 40
+            case .wing: return 22
+            case .hair: return 55
+            case .other: return 32
             }
         }
 
-        /// Extra swing allowed on top of the authored bend, as a multiple of
-        /// the max-angle setting.
-        var angleScale: Float {
+        /// How strongly the anchor's own motion trails the links behind it.
+        var drag: Float {
             switch self {
-            case .skirt: return 2.2
-            case .ribbon: return 2.0
-            case .wing: return 1.8
-            case .sleeve: return 1.6
-            case .hair: return 1.5
-            case .other: return 1.3
+            case .skirt: return 0.9
+            case .ribbon: return 1.3
+            case .sleeve: return 0.6
+            case .wing: return 0.5
+            case .hair: return 1.1
+            case .other: return 0.7
             }
         }
     }
 
+    /// One segment of a chain. The whole state of a link is a unit direction
+    /// and an angular velocity: there is no position to drift, no length to
+    /// stretch and no scale to collapse, which is why this cannot deform the
+    /// mesh a little more on every frame.
+    private struct Link {
+        var bone: Int
+        /// Rest direction in model space.
+        var restDir: SIMD3<Float>
+        /// Authored bend between the previous link and this one, radians.
+        var bend: Float
+        var length: Float
+        var limitLink: Float
+        var limitChain: Float
+        var spring: Float
+        var damp: Float
+        var droop: Float
+        var drag: Float
+        /// False for links that rest *inside* a body capsule (the top of a
+        /// skirt sits on the hip): pushing those out inflates the cloth.
+        var collides: Bool
+        var dir: SIMD3<Float>
+        var omega: SIMD3<Float>
+    }
+
     private struct Chain {
         /// Bone the first link hangs from. -1 only for a rig with no torso.
-        var anchorBone: Int
-        /// Segment owner bones, root first.
-        var bones: [Int]
-        /// Distance from the head of bone i to the head of bone i+1. For the
-        /// last link it is the distance to its first child.
-        var lengths: [Float]
-        /// Unit rest direction of each segment in model space.
-        var restDirs: [SIMD3<Float>]
-        /// Authored bend between segment i-1 and segment i, radians. [0] = 0.
-        var restBend: [Float]
-        /// Particle i+1 relative to the chain root, at rest (model space).
-        var restOffset: [SIMD3<Float>]
-        /// False for particles that rest *inside* a body capsule (the hem of a
-        /// skirt sits on the hip): pushing those out would inflate the cloth.
-        var collides: [Bool]
+        var anchor: Int
+        var links: [Link]
         var kind: ChainKind
-        /// points[0] is the anchor, points[i+1] the tail of bone i.
-        var points: [SIMD3<Float>]
-        var previous: [SIMD3<Float>]
-        var seeded: Bool
         var name: String
+        var seeded: Bool
+        var lastAnchor: SIMD3<Float>
+        /// Anchor velocity for this frame, clamped. Sampled once per frame so
+        /// the trailing drag does not depend on how many substeps run.
+        var velocity: SIMD3<Float>
     }
 
     private struct Capsule {
@@ -748,7 +778,7 @@ final class MMDSpringPhysics {
         "scarf", "マフラー", "ネクタイ", "necktie", "テープ", "ストラップ",
         "strap", "ハネ", "ポニー", "ponytail", "braid", "三つ編",
         // Chinese / pinyin rigs (Genshin, 王者 rips).
-        "裙", "衣摆", "飘带", "披风", "头发", "刘海", "马尾", "辫", "发梢",
+        "裙", "衣摆", "飘带", "披风", "头发", "马尾", "辫", "发梢",
         "围巾", "腰带", "领带", "下摆", "纱", "穗", "尾巴", "带", "挂饰"
     ]
 
@@ -766,7 +796,11 @@ final class MMDSpringPhysics {
         // swung it, which is the arm deformation reported on v1.7.
         "臂", "肘", "腕", "手", "掌", "腿", "膝", "脚", "踝", "胯", "臀",
         "胸", "腹", "脊", "脖", "頭", "头", "颈", "肩胛", "锁骨", "手指",
-        "足", "脚趾", "大腿", "小腿", "上臂", "前臂", "股", "胫"
+        "足", "脚趾", "大腿", "小腿", "上臂", "前臂", "股", "胫",
+        // Bust: a game-rip chest usually has 2–4 wobble bones that the model
+        // author expects to stay put. Swinging them was the "chest moves
+        // wrongly" report.
+        "breast", "bust", "おっぱい", "乳房", "乳", "boob"
     ]
 
     /// Bones that must never be driven by physics: eyes, mouth, brows and the
@@ -787,7 +821,13 @@ final class MMDSpringPhysics {
 
     private static let helperPrefixes = [
         "ctr", "ctrl", "control", "skn", "dummy", "ダミー", "op_", "adj",
-        "adjust", "物理", "phys", "ik_", "motion", "kci", "コントロール"
+        "adjust", "物理", "phys", "ik_", "motion", "kci", "コントロール",
+        // Chinese rigs from 原神 / 星穹铁道 exports start with a 操作中心
+        // ("operation centre") bone that carries the whole model. It has no
+        // skin weights, but the old name-only rule turned it into a cloth
+        // chain and it ate part of the 600-bone budget.
+        "操作", "制御", "リグ", "shadow", "影", "ground", "床", "gizmo",
+        "ボーン"
     ]
 
     // MARK: - Lifecycle
@@ -820,7 +860,8 @@ final class MMDSpringPhysics {
         restLocal = model.bones.map { $0.position }
         restWorldPos = [SIMD3<Float>](repeating: .zero, count: boneCount)
         worldPos = [SIMD3<Float>](repeating: .zero, count: boneCount)
-        worldQuat = [simd_quatf](repeating: mmdIdentityQuaternion, count: boneCount)
+        poseQuat = [simd_quatf](repeating: mmdIdentityQuaternion, count: boneCount)
+        solvedQuat = [simd_quatf](repeating: mmdIdentityQuaternion, count: boneCount)
 
         // Children lists + a parent-before-child order. A malformed file can
         // contain a parent cycle; anything unreachable is appended afterwards
@@ -1003,6 +1044,24 @@ final class MMDSpringPhysics {
         }
         let trustGeometry = coreCount >= 6
 
+        // How many vertices depend on a bone, own plus subtree. A control bone
+        // (操作中心, a dummy, an IK target) owns none, and rotating it can only
+        // corrupt the rig — never the cloth. This is the filter that keeps a
+        // 911-bone model from feeding 600 "cloth" bones into the solver.
+        var skinnedBelow = [Int](repeating: 0, count: boneCount)
+        for vertex in model.vertices {
+            for slot in 0..<4 {
+                guard vertex.boneWeights[slot] > 0.02 else { continue }
+                let bone = Int(vertex.boneIndices[slot])
+                guard bone >= 0, bone < boneCount else { continue }
+                skinnedBelow[bone] += 1
+            }
+        }
+        for index in topoOrder.reversed() {
+            let parent = parentIndices[index]
+            if parent >= 0 { skinnedBelow[parent] += skinnedBelow[index] }
+        }
+
         var secondary = Set<Int>()
         for index in 0..<boneCount {
             let bone = model.bones[index]
@@ -1010,6 +1069,8 @@ final class MMDSpringPhysics {
             if isCore[index] || hasCoreBelow[index] { continue }
             if Self.faceKeywords.contains(where: { lower.contains($0) }) { continue }
             if Self.rigidKeywords.contains(where: { lower.contains($0) }) { continue }
+            // Nothing is skinned to it, so it cannot be cloth.
+            if skinnedBelow[index] < 4 { continue }
             let named = Self.clothKeywords.contains(where: { lower.contains($0) })
             if named || trustGeometry { secondary.insert(index) }
         }
@@ -1048,12 +1109,15 @@ final class MMDSpringPhysics {
         let minChain = max(0.02, modelHeight * 0.012)
         var kindCounts: [String: Int] = [:]
 
-        for bones in bonesOf where !bones.isEmpty && bones.count <= 64 {
+        for bones in bonesOf where !bones.isEmpty && bones.count <= 16 {
             guard let root = bones.first else { continue }
             let rootPos = restWorldPos[root]
-            var lengths: [Float] = []
-            var dirs: [SIMD3<Float>] = []
-            var offsets: [SIMD3<Float>] = []
+            let lower = (model.bones[root].name + " " + model.bones[root].nameEn).lowercased()
+            let heightFraction = (rootPos.y - floorY) / max(0.001, modelHeight)
+            let kind = Self.chainKind(lower, heightFraction: heightFraction)
+
+            var links: [Link] = []
+            links.reserveCapacity(bones.count)
             var total: Float = 0
 
             for (i, bone) in bones.enumerated() {
@@ -1065,7 +1129,7 @@ final class MMDSpringPhysics {
                     // model; using it as the tip stretches the last link into
                     // the spikes seen on skirts.
                     let delta = restWorldPos[child] - restWorldPos[bone]
-                    let limit = max(modelHeight * 0.08, i > 0 ? lengths[i - 1] * 4 : 0)
+                    let limit = max(modelHeight * 0.08, links.last.map { $0.length * 4 } ?? 0)
                     if simd_length(delta) <= limit { tail = restWorldPos[child] }
                 }
                 var length = modelHeight * 0.02
@@ -1079,62 +1143,66 @@ final class MMDSpringPhysics {
                     }
                 }
                 let clamped = max(minSegment, length)
-                lengths.append(clamped)
-                dirs.append(dir)
-                offsets.append(restWorldPos[bone] - rootPos + dir * clamped)
+                let tailPoint = restWorldPos[bone] + dir * clamped
                 total += clamped
+                let bend = links.last.map { previous in
+                    acosf(max(-1, min(1, simd_dot(previous.restDir, dir))))
+                } ?? 0
+                links.append(Link(bone: bone,
+                                  restDir: dir,
+                                  bend: bend,
+                                  length: clamped,
+                                  limitLink: 1,
+                                  limitChain: kind.chainLimit,
+                                  spring: kind.spring,
+                                  damp: 2 * sqrtf(kind.spring) * 0.85,
+                                  droop: 0,
+                                  drag: kind.drag,
+                                  collides: !restsInside(tailPoint),
+                                  dir: dir,
+                                  omega: .zero))
             }
             guard total >= minChain else { continue }
 
-            var bend: [Float] = []
-            for i in 0..<dirs.count {
-                if i == 0 { bend.append(0); continue }
-                let cosine = max(-1, min(1, simd_dot(dirs[i - 1], dirs[i])))
-                bend.append(acosf(cosine))
+            // A chain's total swing has to stay inside `chainLimit`, so a
+            // 10-link skirt gets ~7° per joint and a 3-link sash gets 25°.
+            // Without this a long skirt summed 8 x 19° and folded inside out.
+            let perLink = min(kind.linkLimit, kind.chainLimit * 0.9 / Float(links.count))
+            for i in links.indices {
+                links[i].limitLink = perLink
+                // Gravity sags each joint to ~50% of its budget at rest: enough
+                // to read as weight, not enough to crush the authored shape.
+                // The 1.4 is not a fudge: gravity torque goes as
+                // sin(angle to vertical) while the spring goes as sin(angle to
+                // pose), so a linear coefficient has to over-drive.
+                links[i].droop = links[i].spring * perLink * 1.4
             }
 
-            var collides: [Bool] = []
-            collides.reserveCapacity(offsets.count)
-            for offset in offsets {
-                collides.append(!restsInside(rootPos + offset))
-            }
-
-            let lower = (model.bones[root].name + " " + model.bones[root].nameEn).lowercased()
-            let heightFraction = (rootPos.y - floorY) / max(0.001, modelHeight)
-            let kind = Self.chainKind(lower, heightFraction: heightFraction)
-
-            chains.append(Chain(anchorBone: parentIndices[root],
-                                bones: bones,
-                                lengths: lengths,
-                                restDirs: dirs,
-                                restBend: bend,
-                                restOffset: offsets,
-                                collides: collides,
+            chains.append(Chain(anchor: parentIndices[root],
+                                links: links,
                                 kind: kind,
-                                points: [SIMD3<Float>](repeating: .zero, count: bones.count + 1),
-                                previous: [SIMD3<Float>](repeating: .zero, count: bones.count + 1),
+                                name: model.bones[root].name,
                                 seeded: false,
-                                name: model.bones[root].name))
+                                lastAnchor: .zero,
+                                velocity: .zero))
             kindCounts[kind.title, default: 0] += 1
             if chainSamples.count < 8 {
-                chainSamples.append("\(model.bones[root].name)×\(bones.count)")
+                chainSamples.append("\(model.bones[root].name)×\(links.count)")
             }
         }
 
-        if chains.reduce(0, { $0 + $1.bones.count }) > 600 {
-            // A rig with hundreds of dangling helper bones would otherwise
-            // cost more than the render. Chains are kept in depth order — a
-            // sort here would put a child chain before its anchor and leave it
-            // hanging off a bone that never moves.
-            var budget = 600
+        // Keep the budget in depth order: a child chain solved before its
+        // anchor would hang off a bone that never moves.
+        if chains.reduce(0, { $0 + $1.links.count }) > 480 {
+            var budget = 480
             var kept: [Chain] = []
-            for chain in chains where chain.bones.count <= budget {
-                budget -= chain.bones.count
+            for chain in chains where chain.links.count <= budget {
+                budget -= chain.links.count
                 kept.append(chain)
             }
             chains = kept
         }
-        drivenBoneCount = chains.reduce(0) { $0 + $1.bones.count }
+        drivenBoneCount = chains.reduce(0) { $0 + $1.links.count }
         clothChainCount = chains.count
         chainKindSummary = kindCounts.sorted { $0.key < $1.key }.map { ($0.key, $0.value) }
     }
@@ -1202,7 +1270,11 @@ final class MMDSpringPhysics {
         let useChains = settings.mode == .secondary
             || (settings.mode == .rigid && rigidStates.isEmpty)
         if useChains && !chains.isEmpty {
-            stepChains(settings: settings, dt: advance ? dt : 0)
+            if advance {
+                stepChains(settings: settings, dt: dt)
+            } else if chains.contains(where: { !$0.seeded }) {
+                seedAllChains()
+            }
             emitChains(into: &result)
         }
 
@@ -1218,70 +1290,79 @@ final class MMDSpringPhysics {
             let parent = parentIndices[index]
             let animation = animations[index] ?? MMDBoneAnimation()
             let parentPos = parent >= 0 ? worldPos[parent] : .zero
-            let parentQuat = parent >= 0 ? worldQuat[parent] : mmdIdentityQuaternion
+            let parentQuat = parent >= 0 ? poseQuat[parent] : mmdIdentityQuaternion
             worldPos[index] = parentPos + parentQuat.act(restLocal[index] + animation.position)
-            worldQuat[index] = quatNormalize(parentQuat * animation.rotation)
+            let quat = quatNormalize(parentQuat * animation.rotation)
+            poseQuat[index] = quat
+            solvedQuat[index] = quat
         }
     }
 
     // MARK: - Chain integration
 
-    /// Position-based (Verlet) chain solver.
+    /// Angular spring-damper secondary motion.
     ///
-    /// The previous version integrated one angular velocity per link with a
-    /// gravity torque plus a hard cone limit against the rest direction. On a
-    /// long sash that pinned *every* link on the cone, so the sash left the
-    /// body as one straight board and never came back — the "rigid cardboard"
-    /// look. Here the state is the world position of each link tip: gravity
-    /// acts on the positions, the links are kept inextensible with a distance
-    /// constraint, consecutive links may only bend by the authored angle plus
-    /// the swing budget, and a soft shape pull returns the chain to its
-    /// silhouette when the body stops moving.
+    /// Every link owns a *unit direction* and an angular velocity. Gravity,
+    /// wind and the anchor's own motion torque the direction away from the
+    /// pose the animation gives it; a spring pulls it back. Nothing else is
+    /// stored, so there is no position to drift, no length to stretch and no
+    /// scale to collapse — the failure mode "the skirt deforms a bit more
+    /// every second" is structurally impossible here.
+    ///
+    /// The previous version integrated world *positions* with Verlet plus a
+    /// collision push that wrote back only the positions. Each push therefore
+    /// handed the particle a fresh outward velocity, and a hem resting against
+    /// a thigh capsule pumped energy at the step rate: the hem jittered,
+    /// creased, and crept further out over time.
     private func stepChains(settings: MMDPhysicsSettings, dt: Float) {
         guard !chains.isEmpty else { return }
-
-        // A chain that has never been solved (first frame, after a seek, after
-        // a model swap) starts from the pose, not from model space.
-        if chains.contains(where: { !$0.seeded }) {
-            for index in chains.indices where !chains[index].seeded {
-                var chain = chains[index]
-                let anchorPos = chain.anchorBone >= 0 ? worldPos[chain.anchorBone] : .zero
-                let anchorQuat = chain.anchorBone >= 0 ? worldQuat[chain.anchorBone] : mmdIdentityQuaternion
-                seed(&chain, anchorPos: anchorPos, anchorQuat: anchorQuat)
-                chains[index] = chain
-            }
-        }
+        if chains.contains(where: { !$0.seeded }) { seedAllChains() }
         guard dt > 0.00001 else { return }
 
-        let substeps = max(1, min(4, settings.substeps))
-        let h = 1.0 / (60.0 * Float(substeps))
-        substepAccumulator += dt
+        // Fixed 120 Hz, at most 6 catch-up steps. A slow frame can no longer
+        // hand the solver a huge dt and blow the chain apart.
+        for index in chains.indices {
+            let anchorPos = chains[index].anchor >= 0 ? worldPos[chains[index].anchor] : .zero
+            var velocity = (anchorPos - chains[index].lastAnchor) / dt
+            let speed = simd_length(velocity)
+            // A seek or a teleport must not fling the chain across the scene.
+            if speed > 12 { velocity *= 12 / speed }
+            chains[index].velocity = velocity
+            chains[index].lastAnchor = anchorPos
+        }
+
+        let h: Float = 1.0 / 120.0
+        substepAccumulator = min(substepAccumulator + dt, h * 6)
         var steps = 0
-        while substepAccumulator >= h && steps < 8 {
+        while substepAccumulator >= h && steps < 6 {
             simTime += h
             subStep(settings: settings, h: h, time: simTime)
             substepAccumulator -= h
             steps += 1
         }
-        if steps >= 8 { substepAccumulator = 0 }
+    }
+
+    private func seedAllChains() {
+        for index in chains.indices {
+            var chain = chains[index]
+            let anchorPos = chain.anchor >= 0 ? worldPos[chain.anchor] : .zero
+            let anchorQuat = chain.anchor >= 0 ? solvedQuat[chain.anchor] : mmdIdentityQuaternion
+            seed(&chain, anchorPos: anchorPos, anchorQuat: anchorQuat)
+            chains[index] = chain
+        }
     }
 
     private func seed(_ chain: inout Chain, anchorPos: SIMD3<Float>, anchorQuat: simd_quatf) {
-        chain.points[0] = anchorPos
-        chain.previous[0] = anchorPos
-        for i in 0..<chain.bones.count {
-            let point = anchorPos + anchorQuat.act(chain.restOffset[i])
-            chain.points[i + 1] = point
-            chain.previous[i + 1] = point
+        for j in chain.links.indices {
+            chain.links[j].dir = anchorQuat.act(chain.links[j].restDir).unit
+            chain.links[j].omega = .zero
         }
+        chain.lastAnchor = anchorPos
+        chain.velocity = .zero
         chain.seeded = true
     }
 
     private func subStep(settings: MMDPhysicsSettings, h: Float, time: Float) {
-        // MMD models are authored at roughly 8 units to a head; a 160 cm
-        // character is ~20 units tall, so gravity is ~78 units/s^2, not 9.8.
-        // The old torque constants were arbitrary and far too weak.
-        let gravity = 78 * max(0, settings.gravity)
         let down = SIMD3<Float>(0, -1, 0)
         let windStrength = max(0, settings.wind)
         var windDir = SIMD3<Float>.zero
@@ -1290,105 +1371,107 @@ final class MMDSpringPhysics {
                                    sinf(time * 0.9) * 0.2,
                                    cosf(time * 1.31) * 0.7 + cosf(time * 0.37) * 0.3).unit
         }
-        let retention = max(0.90, min(0.995, 1 - 0.10 * settings.damping))
-        let stiffnessScale = max(0.12, min(3.5, settings.stiffness / 0.4))
-        let maxSwing = mmdRadians(max(4, settings.maxAngle))
-        let iterations = 3
-        let maxSpeed: Float = 60
+        let gravityScale = max(0, settings.gravity) / 0.75
+        let dampingScale = max(0.4, min(2.2, settings.damping / 0.35))
+        let stiffnessScale = max(0.5, min(2.0, settings.stiffness / 0.4))
+        let swingScale = max(0.5, min(1.8, settings.maxAngle / 50))
 
         for chainIndex in chains.indices {
             var chain = chains[chainIndex]
-            let anchorPos = chain.anchorBone >= 0 ? worldPos[chain.anchorBone] : .zero
-            let anchorQuat = chain.anchorBone >= 0 ? worldQuat[chain.anchorBone] : mmdIdentityQuaternion
+            let anchorPos = chain.anchor >= 0 ? worldPos[chain.anchor] : .zero
+            let anchorQuat = chain.anchor >= 0 ? solvedQuat[chain.anchor] : mmdIdentityQuaternion
             if !chain.seeded {
                 seed(&chain, anchorPos: anchorPos, anchorQuat: anchorQuat)
             }
-            chain.points[0] = anchorPos
-            chain.previous[0] = anchorPos
+            // Linear velocity of the anchor drives the trailing drag.
+            let anchorVel = chain.velocity
+            let anchorSpeed = simd_length(anchorVel)
+            let trailing: SIMD3<Float> = anchorSpeed > 0.05
+                ? -anchorVel / max(anchorSpeed, 1e-5) : SIMD3<Float>.zero
 
-            let pull = max(0.0004, min(0.02, chain.kind.shapePull * stiffnessScale))
-            let linkGravity = gravity * chain.kind.gravityScale
-            let windAccel = windDir * (26 * windStrength)
+            var head = anchorPos
+            var previousDir = anchorQuat.act(chain.links[0].restDir).unit
+            for j in chain.links.indices {
+                var link = chain.links[j]
+                let poseDir = poseQuat[link.bone].act(link.restDir).unit
+                let silhouette = anchorQuat.act(link.restDir).unit
+                let linkLimit = link.limitLink * swingScale
 
-            // 1. Integrate every particle, keeping it near its silhouette.
-            for i in 1..<chain.points.count {
-                var displacement = (chain.points[i] - chain.previous[i]) * retention
-                let speed = simd_length(displacement) / h
-                if speed > maxSpeed { displacement *= maxSpeed / speed }
-                chain.previous[i] = chain.points[i]
+                var dir = link.dir
+                if simd_length_squared(dir) < 0.25 { dir = poseDir }
 
-                let target = anchorPos + anchorQuat.act(chain.restOffset[i - 1])
-                var next = chain.points[i] + displacement
-                    + (down * linkGravity + windAccel) * (h * h)
-                // Shape memory in position space. The same correction is
-                // applied to `previous` so the pull cannot inject energy and
-                // make the chain hum.
-                let correction = (target - next) * pull
-                next += correction
-                chain.previous[i] += correction
-                chain.points[i] = next
-            }
+                var torque = simd_cross(dir, down) * (link.droop * gravityScale)
+                if windStrength > 0.001 {
+                    torque += simd_cross(dir, windDir) * (link.drag * 8 * windStrength)
+                }
+                torque += simd_cross(dir, poseDir) * (link.spring * stiffnessScale)
+                if trailing != SIMD3<Float>.zero {
+                    torque += simd_cross(dir, trailing) * (anchorSpeed * link.drag * 4)
+                }
 
-            // 2. Constraints.
-            for _ in 0..<iterations {
-                for i in 0..<chain.bones.count {
-                    let a = chain.points[i]
-                    let b = chain.points[i + 1]
-                    let delta = b - a
-                    let length = simd_length(delta)
-                    guard length > 1e-6 else { continue }
-                    let axis = delta / length
-                    let rest = chain.lengths[i]
-                    if i == 0 {
-                        chain.points[i + 1] = a + axis * rest
-                    } else {
-                        let correction = (length - rest) * 0.5
-                        chain.points[i] = a + axis * correction
-                        chain.points[i + 1] = b - axis * correction
+                var omega = link.omega + torque * h
+                // Implicit damping: unconditionally stable for any dt.
+                omega /= (1 + link.damp * dampingScale * h)
+                let spin = simd_length(omega)
+                if spin > 1e-5 {
+                    let angle = min(spin * h, 0.5)
+                    dir = simd_quatf(angle: angle, axis: omega / spin).act(dir)
+                    // Bleed the velocity that was actually *used*, so a
+                    // clamped step cannot leave a huge omega behind.
+                    omega *= angle / (spin * h)
+                }
+
+                // Two hard bounds. The first is the *joint*: this link may
+                // bend no more than the authored bend plus its share of the
+                // budget away from the link it hangs off, which is what keeps
+                // a ribbon from creasing. The second is the *chain*: no link
+                // may leave the authored silhouette by more than the chain
+                // budget, which is what keeps the skirt from flipping inside
+                // out or creeping away over a long take.
+                //
+                // Both are measured against solved neighbours, not against a
+                // fixed rest direction. Bounding every joint against the rest
+                // direction (v12.7) pinned the whole chain onto one cone and
+                // made it project out of the body like a board.
+                dir = clampDir(dir, to: previousDir, maxAngle: link.bend + linkLimit)
+                dir = clampDir(dir, to: silhouette, maxAngle: link.chainLimit * swingScale)
+
+                if link.collides {
+                    let tail = head + dir * link.length
+                    let pushed = pushOut(tail)
+                    if simd_length_squared(pushed - tail) > 1e-8 {
+                        var corrected = (pushed - head).unit
+                        if corrected == SIMD3<Float>.zero { corrected = dir }
+                        corrected = clampDir(corrected, to: previousDir,
+                                             maxAngle: link.bend + linkLimit)
+                        corrected = clampDir(corrected, to: silhouette,
+                                             maxAngle: link.chainLimit * swingScale)
+                        dir = corrected
                     }
                 }
 
-                for j in 1..<chain.bones.count {
-                    let d0 = (chain.points[j] - chain.points[j - 1]).unit
-                    let d1 = (chain.points[j + 1] - chain.points[j]).unit
-                    guard d0 != .zero, d1 != .zero else { continue }
-                    let cosine = max(-1, min(1, simd_dot(d0, d1)))
-                    let angle = acosf(cosine)
-                    let limit = chain.restBend[j] + maxSwing * chain.kind.angleScale
-                    guard angle > limit else { continue }
-                    let axis = simd_cross(d0, d1)
-                    let bent = simd_length(axis) > 1e-5
-                        ? simd_quatf(angle: limit, axis: axis.unit).act(d0)
-                        : d0
-                    chain.points[j + 1] = chain.points[j] + bent * chain.lengths[j]
-                }
-
-                for i in 1..<chain.points.count where chain.collides[i - 1] {
-                    chain.points[i] = pushOut(chain.points[i])
-                }
-                chain.points[0] = anchorPos
-
-                // Safety net. The cone allows a link to swing, it must never
-                // leave the body by more than ~1.5x its rest offset: one bad
-                // frame (teleporting anchor, collider popping) otherwise flings
-                // a spike out of the skirt that never comes back.
-                for i in 1..<chain.points.count {
-                    let target = anchorPos + anchorQuat.act(chain.restOffset[i - 1])
-                    let limit = max(chain.restOffset[i - 1].length * 1.45, modelHeight * 0.02)
-                    let offset = chain.points[i] - target
-                    let distance = simd_length(offset)
-                    if distance > limit {
-                        chain.points[i] = target + offset * (limit / distance)
-                    }
-                }
+                link.dir = dir.unit
+                link.omega = omega
+                chain.links[j] = link
+                previousDir = link.dir
+                head += link.dir * link.length
             }
-
             chains[chainIndex] = chain
-            // Deeper chains may hang off this one; publish the solved
-            // transforms now so a strand anchored to a skirt bone follows the
-            // cloth instead of the skeleton pose.
-            updateTransforms(chain)
         }
+    }
+
+    /// Rotates `dir` back onto `ref` when the angle between them exceeds
+    /// `maxAngle`, keeping the azimuth. This is a *cone claw*, not a
+    /// renormalisation: the direction keeps whatever freedom it had inside
+    /// the cone, which is what stops a chain from folding flat.
+    @inline(__always)
+    private func clampDir(_ dir: SIMD3<Float>, to ref: SIMD3<Float>, maxAngle: Float) -> SIMD3<Float> {
+        let cosine = max(-1, min(1, simd_dot(dir, ref)))
+        guard acosf(cosine) > maxAngle else { return dir }
+        let axis = simd_cross(ref, dir)
+        let axisLength = simd_length(axis)
+        guard axisLength > 1e-6 else { return ref }
+        return simd_quatf(angle: maxAngle, axis: axis / axisLength).act(ref).unit
     }
 
     private func pushOut(_ point: SIMD3<Float>) -> SIMD3<Float> {
@@ -1412,9 +1495,9 @@ final class MMDSpringPhysics {
         return result
     }
 
-    /// True when a particle's rest position already lies inside a body
-    /// capsule. A skirt root sits on the hips; pushing it out would inflate
-    /// the whole skirt, so those particles opt out of collision.
+    /// True when a point's rest position already lies inside a body capsule.
+    /// A skirt root sits on the hips; pushing it out would inflate the whole
+    /// skirt, so those particles opt out of collision.
     private func restsInside(_ point: SIMD3<Float>) -> Bool {
         for capsule in capsules {
             let a = capsule.boneA >= 0 ? restWorldPos[capsule.boneA] : .zero
@@ -1429,38 +1512,38 @@ final class MMDSpringPhysics {
         return false
     }
 
-    /// Turns the solved particle positions into bone orientations, writes them
-    /// into the world mirror and returns the local rotations.
+    /// Turns the solved directions into bone rotations.
     ///
-    /// Rotating the rest direction onto the solved one with the *shortest arc
-    /// in the parent frame* keeps the bone's roll, so a flat sash stays flat
-    /// instead of twisting on its axis.
-    @discardableResult
-    private func updateTransforms(_ chain: Chain) -> [simd_quatf] {
-        var rotations: [simd_quatf] = []
-        rotations.reserveCapacity(chain.bones.count)
-        var quat = chain.anchorBone >= 0 ? worldQuat[chain.anchorBone] : mmdIdentityQuaternion
-        for j in 0..<chain.bones.count {
-            let bone = chain.bones[j]
-            let segment = chain.points[j + 1] - chain.points[j]
-            let worldDir = segment.unit
-            let localDir = (worldDir == .zero ? chain.restDirs[j] : quat.inverse.act(worldDir)).unit
-            let rotation = quatNormalize(quatBetween(chain.restDirs[j], localDir))
-            quat = quatNormalize(quat * rotation)
-            worldQuat[bone] = quat
-            worldPos[bone] = chain.points[j]
-            rotations.append(rotation)
-        }
-        return rotations
-    }
-
+    /// The rotation is the shortest arc that maps the bone's rest direction
+    /// onto the solved one, expressed in the parent's frame — a flat sash
+    /// keeps its roll instead of twisting on its own axis.
     private func emitChains(into result: inout [Int: MMDBoneAnimation]) {
         for chain in chains {
-            let rotations = updateTransforms(chain)
-            for j in 0..<chain.bones.count {
-                var animation = result[chain.bones[j]] ?? MMDBoneAnimation()
-                animation.rotation = rotations[j]
-                result[chain.bones[j]] = animation
+            guard chain.seeded else { continue }
+            var parentQuat = chain.anchor >= 0 ? solvedQuat[chain.anchor] : mmdIdentityQuaternion
+            var head = chain.anchor >= 0 ? worldPos[chain.anchor] : .zero
+            for j in chain.links.indices {
+                let link = chain.links[j]
+                let bone = link.bone
+                // Keep whatever the animation asked for and add only the
+                // *difference* between the solved direction and the posed one.
+                // Composing the correction onto the animated rotation keeps
+                // the bone's roll, and means that a link sitting exactly on
+                // its pose is bit-for-bit the pose — switching physics on can
+                // no longer restyle a bone that is not moving.
+                let animated = result[bone]?.rotation ?? mmdIdentityQuaternion
+                let posedDir = animated.act(link.restDir).unit
+                let targetDir = parentQuat.inverse.act(link.dir).unit
+                let correction = quatBetween(posedDir == .zero ? link.restDir : posedDir,
+                                             targetDir == .zero ? link.restDir : targetDir)
+                let rotation = quatNormalize(correction * animated)
+                parentQuat = quatNormalize(parentQuat * rotation)
+                solvedQuat[bone] = parentQuat
+                worldPos[bone] = head
+                var animation = result[bone] ?? MMDBoneAnimation()
+                animation.rotation = rotation
+                result[bone] = animation
+                head += link.dir * link.length
             }
         }
     }
@@ -1627,7 +1710,7 @@ final class MMDSpringPhysics {
             if length > limit { deltaPosition *= limit / length }
 
             let parent = parentIndices[boneIndex]
-            let parentQuat = parent >= 0 ? worldQuat[parent] : mmdIdentityQuaternion
+            let parentQuat = parent >= 0 ? poseQuat[parent] : mmdIdentityQuaternion
             var animation = animations[boneIndex] ?? MMDBoneAnimation()
             animation.position += parentQuat.inverse.act(deltaPosition)
 
@@ -1647,7 +1730,6 @@ final class MMDSpringPhysics {
         return humanoidMarkers.contains(where: { text.contains($0) })
     }
 }
-
 
 /// MMD's IK "unit angle" is a multiplier on the alignment step. Clamp it to a
 /// sane range so a malformed PMX cannot make one iteration jump 180 degrees.
