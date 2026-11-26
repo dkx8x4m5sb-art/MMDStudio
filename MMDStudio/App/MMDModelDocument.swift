@@ -282,6 +282,21 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     /// Bones the spring chains actually drive. Zero means the physics switch
     /// has nothing to move, which is what "physics does nothing" usually is.
     var clothBoneCount: Int { springPhysics.clothBoneCount }
+    var clothChainCount: Int { springPhysics.clothChainCount }
+    var physicsColliderCount: Int { springPhysics.colliderCount }
+    /// "hair 6 · skirt 4" — what kinds of chains were found.
+    var clothChainSummary: String {
+        springPhysics.chainKindSummary.map { "\($0.0) \($0.1)" }.joined(separator: " · ")
+    }
+    /// First few chain roots, so a model whose ribbons are not detected can be
+    /// diagnosed from the settings page alone.
+    var clothChainSamples: String { springPhysics.chainSamples.joined(separator: "、") }
+    /// Short build stamp: "1.7 (17)".
+    var appVersionText: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
+    }
 
     func removeMotion() {
         pause()

@@ -319,7 +319,7 @@ struct ModelViewerView: View {
                 }
             }
             .font(.caption2.monospacedDigit().weight(.semibold))
-            Text("\(document.renderStats.resolution) · \(document.renderStats.qualityLabel)")
+            Text("v\(document.appVersionText) · \(document.renderStats.resolution) · \(document.renderStats.qualityLabel)")
                 .font(.system(size: 9, weight: .medium, design: .monospaced))
                 .foregroundStyle(.white.opacity(0.6))
             if showModelDetails {
