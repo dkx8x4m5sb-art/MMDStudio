@@ -497,6 +497,11 @@ struct MMDRenderSettings {
     var specularStrength: Float = 0.55
     /// Warm light bleeding at the terminator, used by skin and thin cloth.
     var skinScatter: Float = 0.35
+
+    /// SDEF spherical skinning for skirts, cuffs and chest. Off by default:
+    /// the sphere solve only matches the author's intent when the converter
+    /// wrote C/R0/R1 in model space, and several do not.
+    var useSDEFSkinning: Bool = false
     var toonEnabled: Bool = true
     var renderMode: MMDRenderMode = .toon
     var style: MMDRenderStyle = .mmd

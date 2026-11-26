@@ -75,11 +75,15 @@ static inline float4 mmdSkinPosition(uint vid,
                                      device const uint4 *boneIndices,
                                      device const float4 *weights,
                                      device const float4x4 *palette,
-                                     device const float4 *sdef) {
+                                     device const float4 *sdef,
+                                     float sdefEnabled) {
     uint4 bi = boneIndices[vid];
     float4 w = weights[vid];
     float4 center = sdef[vid * 3 + 0];
-    if (center.w > 0.5) {
+    // SDEF is opt-in. The sphere solve is only correct when the converter
+    // wrote C/R0/R1 in model space; several popular exporters write bone-local
+    // or zero values, and using them tears skirts and cuffs apart.
+    if (center.w > 0.5 && sdefEnabled > 0.5) {
         // SDEF: the vertex rides a sphere whose centre follows both bones.
         // Treating these as plain BDEF2 (the old behaviour) collapsed skirts
         // and cuffs into the body while the legs moved.
@@ -116,11 +120,12 @@ static inline float3 mmdSkinNormal(uint vid,
                                    device const uint4 *boneIndices,
                                    device const float4 *weights,
                                    device const float4x4 *palette,
-                                   device const float4 *sdef) {
+                                   device const float4 *sdef,
+                                   float sdefEnabled) {
     uint4 bi = boneIndices[vid];
     float4 w = weights[vid];
     float4 center = sdef[vid * 3 + 0];
-    if (center.w > 0.5) {
+    if (center.w > 0.5 && sdefEnabled > 0.5) {
         float3 n0 = (palette[bi.x] * float4(normal, 0.0)).xyz;
         float3 n1 = (palette[bi.y] * float4(normal, 0.0)).xyz;
         return w.x * n0 + w.y * n1;
@@ -143,8 +148,8 @@ vertex MeshVertexOut mmd_mesh_vertex(uint vid [[vertex_id]],
                                      constant SceneUniforms &scene [[buffer(6)]],
                                      device const float4x4 *palette [[buffer(7)]],
                                      device const float4 *sdef [[buffer(8)]]) {
-    float3 skinned = mmdSkinPosition(vid, positions[vid], boneIndices, weights, palette, sdef).xyz;
-    float3 skinnedNormal = mmdSkinNormal(vid, normals[vid], boneIndices, weights, palette, sdef);
+    float3 skinned = mmdSkinPosition(vid, positions[vid], boneIndices, weights, palette, sdef, scene.renderParams.w).xyz;
+    float3 skinnedNormal = mmdSkinNormal(vid, normals[vid], boneIndices, weights, palette, sdef, scene.renderParams.w);
 
     float4 world = scene.model * float4(skinned, 1.0);
     float3 worldNormal = normalize((scene.normalMatrix * float4(skinnedNormal, 0.0)).xyz);
@@ -424,8 +429,8 @@ vertex EdgeVertexOut mmd_edge_vertex(uint vid [[vertex_id]],
                                      constant MaterialUniforms &mat [[buffer(7)]],
                                      device const float4x4 *palette [[buffer(8)]],
                                      device const float4 *sdef [[buffer(9)]]) {
-    float3 skinned = mmdSkinPosition(vid, positions[vid], boneIndices, weights, palette, sdef).xyz;
-    float3 skinnedNormal = normalize(mmdSkinNormal(vid, normals[vid], boneIndices, weights, palette, sdef));
+    float3 skinned = mmdSkinPosition(vid, positions[vid], boneIndices, weights, palette, sdef, scene.renderParams.w).xyz;
+    float3 skinnedNormal = normalize(mmdSkinNormal(vid, normals[vid], boneIndices, weights, palette, sdef, scene.renderParams.w));
 
     float4 world = scene.model * float4(skinned, 1.0);
     float4 clip = scene.viewProjection * world;

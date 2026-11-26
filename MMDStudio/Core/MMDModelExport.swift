@@ -283,6 +283,10 @@ final class MMDVideoExporter: ObservableObject {
             // Never render frame 0 into a texture that still holds the last
             // export's final frame.
             renderer.resetCaptureTargets()
+            // The display link redraws at 120 Hz; letting it run during an
+            // export halves the GPU budget available to the encoder.
+            renderer.setPreviewPaused(true)
+            defer { renderer.setPreviewPaused(false) }
             do {
                 try FileManager.default.removeItemIfExists(tempURL)
                 let writer = try AVAssetWriter(outputURL: tempURL,
@@ -347,48 +351,84 @@ final class MMDVideoExporter: ObservableObject {
                 }
                 writer.startSession(atSourceTime: .zero)
 
+                // HEVC with alpha treats the first intra frame as the baseline
+                // for the alpha plane. If that frame already holds the
+                // character, every later frame composites over its silhouette
+                // — the "first frame stuck under the whole video" ghost that
+                // survived the readback and memset fixes. Leading with one
+                // fully transparent frame leaves the baseline empty.
+                let frameOffset = transparentBackground ? 1 : 0
+                if transparentBackground,
+                   let clear = Self.transparentPixelBuffer(width: width, height: height,
+                                                           pool: adaptor.pixelBufferPool) {
+                    _ = adaptor.append(clear, withPresentationTime: .zero)
+                }
+
                 for frame in 0..<frameCount {
                     if self.cancelled { break }
-                    let semaphore = DispatchSemaphore(value: 0)
-                    var frameBytes: [UInt8]?
-                    var frameRowBytes = 0
-                    renderer.captureFrameRaw(frame: Float(frame) / Float(max(1, fps)) * document.frameRate,
-                                             width: width, height: height,
-                                             transparentBackground: transparentBackground) { bytes, rowBytes in
-                        frameBytes = bytes
-                        frameRowBytes = rowBytes
-                        semaphore.signal()
+                    let frameTime = Float(frame) / Float(max(1, fps)) * document.frameRate
+                    var buffer: CVPixelBuffer?
+                    var probeBytes: [UInt8]?
+                    var probeRowBytes = 0
+
+                    // Fast path: the GPU draws straight into a buffer owned by
+                    // the encoder. At 4K the old path moved 66 MB per frame
+                    // through the CPU and could not hold 60 fps.
+                    if let pool = adaptor.pixelBufferPool {
+                        var pooled: CVPixelBuffer?
+                        CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pooled)
+                        if let pooled, let texture = renderer.makeCaptureTexture(for: pooled),
+                           renderer.captureFrame(into: texture, frame: frameTime,
+                                                 transparentBackground: transparentBackground) {
+                            buffer = pooled
+                        }
                     }
-                    semaphore.wait()
-                    if transparentBackground, frame == 0 || frame == frameCount / 3,
-                       let bytes = frameBytes {
-                        // Dumping the raw render lets us tell a compositing
-                        // problem from an encoder problem: if these PNGs are
-                        // clean but the .mov still shows frame 0 underneath
-                        // everything, the ghost is produced by the HEVC alpha
-                        // encoder, not by the renderer.
+
+                    if buffer == nil {
+                        let semaphore = DispatchSemaphore(value: 0)
+                        var frameBytes: [UInt8]?
+                        var frameRowBytes = 0
+                        renderer.captureFrameRaw(frame: frameTime, width: width, height: height,
+                                                 transparentBackground: transparentBackground) { bytes, rowBytes in
+                            frameBytes = bytes
+                            frameRowBytes = rowBytes
+                            semaphore.signal()
+                        }
+                        semaphore.wait()
+                        guard let bytes = frameBytes, frameRowBytes > 0,
+                              let made = Self.pixelBuffer(fromBGRA: bytes, rowBytes: frameRowBytes,
+                                                          width: width, height: height,
+                                                          pool: adaptor.pixelBufferPool) else {
+                            throw MMDLoadError.invalidData("第 \(frame) 帧渲染失败")
+                        }
+                        probeBytes = bytes
+                        probeRowBytes = frameRowBytes
+                        buffer = made
+                    }
+
+                    if transparentBackground, let bytes = probeBytes,
+                       frame == 0 || frame == frameCount / 3 {
+                        // Only the fallback path keeps the rows on the CPU, so
+                        // probes are written from there.
                         let probeURL = videoDirectory.appendingPathComponent(
                             "\(safeName)-\(stamp)-probe\(String(format: "%03d", frame)).png")
-                        Self.writeFrameProbe(bytes, rowBytes: frameRowBytes,
+                        Self.writeFrameProbe(bytes, rowBytes: probeRowBytes,
                                              width: width, height: height, to: probeURL)
                         MMDLog.shared.info("Transparent probe frame \(frame): \(probeURL.path)",
                                            category: "Export")
                     }
-                    if transparentBackground, frame < 3, let bytes = frameBytes {
-                        MMDLog.shared.info("Transparent frame \(frame) alpha coverage: \(String(format: "%.2f", Self.alphaCoverage(bytes, rowBytes: frameRowBytes)))",
+                    if transparentBackground, frame < 3, let bytes = probeBytes {
+                        MMDLog.shared.info("Transparent frame \(frame) alpha coverage: \(String(format: "%.2f", Self.alphaCoverage(bytes, rowBytes: probeRowBytes)))",
                                            category: "Export")
                     }
-                    guard let bytes = frameBytes, frameRowBytes > 0,
-                          let buffer = Self.pixelBuffer(fromBGRA: bytes, rowBytes: frameRowBytes,
-                                                        width: width, height: height,
-                                                        pool: frame == 0 ? nil : adaptor.pixelBufferPool) else {
+                    guard let buffer else {
                         throw MMDLoadError.invalidData("第 \(frame) 帧渲染失败")
                     }
                     while !input.isReadyForMoreMediaData {
                         if self.cancelled { break }
                         Thread.sleep(forTimeInterval: 0.005)
                     }
-                    guard adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(frame),
+                    guard adaptor.append(buffer, withPresentationTime: CMTime(value: CMTimeValue(frame + frameOffset),
                                                                                timescale: CMTimeScale(fps))) else {
                         throw MMDLoadError.invalidData("第 \(frame) 帧写入失败：\(writer.error?.localizedDescription ?? "unknown")")
                     }
@@ -489,6 +529,33 @@ final class MMDVideoExporter: ObservableObject {
 
     /// Writes one raw rendered frame to PNG so a transparent export can be
     /// diagnosed against the encoder output.
+    /// A pool-backed, fully cleared pixel buffer. Used for the transparent
+    /// lead-in frame and as a fallback when the pool is unavailable.
+    private static func transparentPixelBuffer(width: Int, height: Int,
+                                               pool: CVPixelBufferPool?) -> CVPixelBuffer? {
+        var buffer: CVPixelBuffer?
+        if let pool {
+            CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
+        }
+        if buffer == nil {
+            let attributes: [String: Any] = [
+                kCVPixelBufferIOSurfacePropertiesKey as String: [:],
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                kCVPixelBufferWidthKey as String: width,
+                kCVPixelBufferHeightKey as String: height
+            ]
+            CVPixelBufferCreate(nil, width, height, kCVPixelFormatType_32BGRA,
+                                attributes as CFDictionary, &buffer)
+        }
+        guard let pixelBuffer = buffer else { return nil }
+        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        if let base = CVPixelBufferGetBaseAddress(pixelBuffer) {
+            memset(base, 0, CVPixelBufferGetDataSize(pixelBuffer))
+        }
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
+        return pixelBuffer
+    }
+
     private static func writeFrameProbe(_ bytes: [UInt8], rowBytes: Int,
                                         width: Int, height: Int, to url: URL) {
         let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()

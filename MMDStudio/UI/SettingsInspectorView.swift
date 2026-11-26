@@ -130,6 +130,16 @@ struct SettingsInspectorView: View {
                         }
                     }
                     Toggle("VMD / PMX IK 求解", isOn: $document.ikEnabled)
+                    if document.ikEnabled {
+                        let chains = document.model.bones.reduce(0) { $0 + ($1.ik != nil ? 1 : 0) }
+                        if chains == 0 {
+                            Text("该模型没有 IK 骨（多数游戏提取模型都是纯 FK），此开关不会有任何效果。")
+                                .font(.caption).foregroundStyle(.orange)
+                        } else {
+                            Text("已检测到 \(chains) 条 IK 链。")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                     Text("摆动模式只驱动裙、髪、飘带、翅膀、袖子等二级骨骼，且会跳过所有 IK 链骨骼与人体主骨；默认关闭，导入新模型后可先开「摆动」确认效果。IK 求解默认关闭：部分模型的踝/膝在求解后会扭曲，需要足部贴地时再单独打开。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
@@ -953,6 +963,11 @@ struct RenderStudioView: View {
                         Text("皮肤透光")
                         Slider(value: bind(\.skinScatter), in: 0...1)
                         Text(String(format: "%.2f", document.renderSettings.skinScatter)).captionValue()
+                    }
+                    Toggle("SDEF 球面蒙皮", isOn: $document.renderSettings.useSDEFSkinning)
+                    if document.renderSettings.useSDEFSkinning {
+                        Text("仅当模型转换器按规范写入 C/R0/R1 时才正确；裙摆炸开就关掉。")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                     Toggle("启用卡通渐变", isOn: $document.renderSettings.toonEnabled)
                     Toggle("启用反壳描边", isOn: $document.renderSettings.edgesEnabled)

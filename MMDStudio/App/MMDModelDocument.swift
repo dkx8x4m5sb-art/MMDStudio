@@ -36,7 +36,13 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     @Published var motion: VMDMotion?
     @Published var motionName: String = ""
     @Published var useCameraMotion: Bool = false
-    @Published var currentFrame: Float = 0
+    @Published var currentFrame: Float = 0 {
+        didSet { if renderFrame != currentFrame { renderFrame = currentFrame } }
+    }
+    /// Frame the renderer should draw. Video export drives this directly
+    /// instead of `currentFrame`, so a 60 fps export does not rebuild the
+    /// whole SwiftUI tree sixty times a second and starve the GPU.
+    var renderFrame: Float = 0
     @Published var isPlaying: Bool = false
     @Published var loopPlayback: Bool = true
     @Published var playbackSpeed: Float = 1.0

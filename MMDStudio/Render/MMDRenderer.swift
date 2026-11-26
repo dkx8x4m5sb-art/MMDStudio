@@ -106,6 +106,8 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         let depth: MTLTexture
     }
     private var cachedCaptureTargets: CaptureTargets?
+    /// Depth-only attachment reused by the zero-copy export path.
+    private var cachedCaptureDepth: (width: Int, height: Int, texture: MTLTexture)?
     /// Reused readback buffer. Allocating a fresh 4K RGBA array per exported
     /// frame cost 33 MB of churn and was the main source of memory pressure
     /// during long exports.
@@ -265,7 +267,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
                 rebuildGroundOverlays(bounds: mesh.bounds)
             }
             refreshMorphPositions(document: document, model: model,
-                                  frame: document.currentFrame, force: true)
+                                  frame: document.renderFrame, force: true)
             reloadAttachments(document: document)
             loadedSceneRevision = document.sceneRevision
             textureCacheWillChange()
@@ -343,7 +345,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         // the GPU finishes, so callers stay sequential.
         let work: () -> Void = { [weak self] in
             guard let self, let document = self.document else { completion(nil); return }
-            document.currentFrame = max(0, min(document.duration, frame))
+            document.renderFrame = max(0, min(document.duration, frame))
             self.captureStill(width: width, height: height,
                               transparentOverride: transparentBackground,
                               preferMSAA: preferMSAA,
@@ -360,7 +362,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
                          completion: @escaping ([UInt8]?, Int) -> Void) {
         let work: () -> Void = { [weak self] in
             guard let self, let document = self.document else { completion(nil, 0); return }
-            document.currentFrame = max(0, min(document.duration, frame))
+            document.renderFrame = max(0, min(document.duration, frame))
             self.captureStill(width: width, height: height,
                               transparentOverride: transparentBackground,
                               preferMSAA: false,
@@ -373,7 +375,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
     func restoreFrame(_ frame: Float) {
         DispatchQueue.main.async { [weak self] in
             guard let self, let document = self.document else { return }
-            document.currentFrame = max(0, min(document.duration, frame))
+            document.renderFrame = max(0, min(document.duration, frame))
             document.resetPhysics()
         }
     }
@@ -404,11 +406,60 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
     /// holds the tail of the previous export.
     func resetCaptureTargets() {
         cachedCaptureTargets = nil
+        cachedCaptureDepth = nil
+    }
+
+    /// Freezes the on-screen view during export so the display link stops
+    /// competing with the offscreen renderer for GPU time.
+    func setPreviewPaused(_ paused: Bool) {
+        DispatchQueue.main.async { [weak self] in
+            self?.view?.isPaused = paused
+        }
+    }
+
+    /// Wraps a CVPixelBuffer's IOSurface in a Metal texture. Rendering into
+    /// it lets the encoder read the frame in place, which removes a 33 MB
+    /// readback and a 33 MB memcpy per frame at 4K.
+    func makeCaptureTexture(for pixelBuffer: CVPixelBuffer) -> MTLTexture? {
+        guard let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue() else {
+            return nil
+        }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        guard width > 0, height > 0 else { return nil }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm_srgb, width: width, height: height, mipmapped: false)
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .shared
+        return device.makeTexture(descriptor: descriptor, iosurface: surface, plane: 0)
+    }
+
+    /// Renders one export frame directly into `texture`. Returns false when
+    /// the render could not be set up, so the caller can fall back to the
+    /// readback path.
+    @discardableResult
+    func captureFrame(into texture: MTLTexture, frame: Float,
+                      transparentBackground: Bool) -> Bool {
+        var succeeded = false
+        let work: () -> Void = { [weak self] in
+            guard let self, let document = self.document else { return }
+            document.renderFrame = max(0, min(document.duration, frame))
+            self.captureStill(width: texture.width, height: texture.height,
+                              transparentOverride: transparentBackground,
+                              preferMSAA: false,
+                              externalTarget: texture,
+                              rendered: { succeeded = true },
+                              completion: { _ in })
+        }
+        if Thread.isMainThread { work() } else { DispatchQueue.main.sync(execute: work) }
+        return succeeded
     }
 
     private func captureStill(width requestedWidth: Int, height requestedHeight: Int,
                               transparentOverride: Bool? = nil,
                               preferMSAA: Bool = true,
+                              externalTarget: MTLTexture? = nil,
+                              rendered: (() -> Void)? = nil,
                               completion: @escaping (UIImage?) -> Void,
                               bytesOut: (([UInt8], Int) -> Void)? = nil) {
         reloadIfNeeded()
@@ -421,9 +472,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         let height = max(64, min(4096, requestedHeight))
         let model = document.model
         refreshMorphPositions(document: document, model: model,
-                              frame: document.currentFrame, force: true)
+                              frame: document.renderFrame, force: true)
 
-        let animations = document.effectiveBoneAnimations(frame: document.currentFrame)
+        let animations = document.effectiveBoneAnimations(frame: document.renderFrame)
         let pose = skeleton.solve(animations: animations, model: model, ikEnabled: document.ikEnabled)
         currentPose = pose
 
@@ -433,7 +484,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         let fovDegrees: Float
         if document.useCameraMotion, let motion = document.motion, !motion.cameraKeys.isEmpty,
            let cameraPose = VMDMotion.evaluateCamera(keys: motion.cameraKeys,
-                                                     frame: document.currentFrame) {
+                                                     frame: document.renderFrame) {
             eye = cameraPose.eye
             target = cameraPose.target
             fovDegrees = cameraPose.fovDegrees
@@ -504,13 +555,33 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         scene.renderParams = SIMD4<Float>(max(0.5, min(4.0, lightSettings.outlineWidth)),
                                       max(0.0, min(2.0, lightSettings.specularStrength)),
                                       max(0.0, min(1.0, lightSettings.skinScatter)),
-                                      0.35)
+                                      lightSettings.useSDEFSkinning ? 1 : 0)
 
         // Video frames skip MSAA: 4× at 4K was the single largest GPU cost and
         // the encoder's own filtering masks the difference.
-        let sampleCount = preferMSAA ? max(1, view?.sampleCount ?? 4) : 1
+        let sampleCount = externalTarget != nil ? 1 : (preferMSAA ? max(1, view?.sampleCount ?? 4) : 1)
         let targets: CaptureTargets
-        if let cached = cachedCaptureTargets,
+        if let externalTarget {
+            // Video export path: render straight into the encoder's
+            // CVPixelBuffer. No MSAA, no readback, no memcpy.
+            let depthTexture: MTLTexture
+            if let cached = cachedCaptureDepth, cached.width == width, cached.height == height {
+                depthTexture = cached.texture
+            } else {
+                let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+                    pixelFormat: .depth32Float, width: width, height: height, mipmapped: false)
+                descriptor.usage = .renderTarget
+                descriptor.storageMode = .private
+                guard let depth = device.makeTexture(descriptor: descriptor) else {
+                    completion(nil)
+                    return
+                }
+                cachedCaptureDepth = (width, height, depth)
+                depthTexture = depth
+            }
+            targets = CaptureTargets(width: width, height: height, sampleCount: 1,
+                                     resolve: externalTarget, msaa: nil, depth: depthTexture)
+        } else if let cached = cachedCaptureTargets,
            cached.width == width, cached.height == height, cached.sampleCount == sampleCount {
             targets = cached
         } else {
@@ -771,6 +842,12 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
+
+        if externalTarget != nil {
+            rendered?()
+            completion(nil)
+            return
+        }
 
         let rowBytes = width * 4
         if captureBytesScratch.count != rowBytes * height {
@@ -1580,7 +1657,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         scene.renderParams = SIMD4<Float>(max(0.5, min(4.0, lightSettings.outlineWidth)),
                                       max(0.0, min(2.0, lightSettings.specularStrength)),
                                       max(0.0, min(1.0, lightSettings.skinScatter)),
-                                      0.35)
+                                      lightSettings.useSDEFSkinning ? 1 : 0)
 
         encoder.setViewport(MTLViewport(originX: 0, originY: 0,
                                         width: Double(view.drawableSize.width),
