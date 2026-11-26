@@ -938,7 +938,9 @@ final class MMDSpringPhysics {
 
         let hips = first(["下半身", "lowerbody", "lower body", "hips", "hip", "pelvis", "腰"])
         let chest = first(["上半身2", "upperbody2", "upper body2", "chest", "胸", "上半身", "upperbody", "spine"])
-        if hips >= 0 || chest >= 0 {
+        // Both endpoints have to resolve. A capsule anchored at the link's own
+        // root would push the whole skirt outward instead of stopping clipping.
+        if hips >= 0 && chest >= 0 {
             capsules.append(Capsule(boneA: hips, boneB: chest, radius: height * 0.075))
         }
         for side in [-1, 1] {
@@ -1061,10 +1063,14 @@ final class MMDSpringPhysics {
                 let parentQuat = parent >= 0 ? worldQuat[parent] : mmdIdentityQuaternion
                 let local = parentQuat.inverse * worldQuat[bone]
                 var animation = result[bone] ?? MMDBoneAnimation()
-                // Keep any authored twist (a VMD pose on a hair bone) but let
-                // the solved direction win. Multiplying on the right leaves the
-                // bone pointing where physics put it.
-                animation.rotation = local * animation.rotation
+                // A VMD clip or a hand-posed bone may carry a deliberate twist.
+                // Keep it when it is substantial; otherwise physics owns the
+                // bone outright. Multiplying blindly would rotate the solved
+                // direction by the authored amount and bend the chain.
+                let authoredAngle = 2 * acosf(min(1, abs(animation.rotation.real)))
+                animation.rotation = authoredAngle > mmdRadians(15)
+                    ? local * animation.rotation
+                    : local
                 result[bone] = animation
             }
         }
