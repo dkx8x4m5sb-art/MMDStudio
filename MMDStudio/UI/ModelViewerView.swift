@@ -102,6 +102,9 @@ struct ModelViewerView: View {
     @State private var showModelDetails = false
     @State private var toast: String?
     @State private var isScrubbingInspector = false
+    /// 当前打开的浮层面板。用画布内浮层代替系统 Menu：菜单在每秒被性能
+    /// 统计刷新的宿主里会不断重建，表现为闪一下、滚动位置弹回顶部。
+    @State private var palettePage: CanvasPalette.Page?
     @StateObject private var recorder = MMDScreenRecorder.shared
 
     var body: some View {
@@ -147,40 +150,25 @@ struct ModelViewerView: View {
                 .transition(.opacity.combined(with: .move(edge: .bottom)))
                 .allowsHitTesting(false)
             }
+            if let page = palettePage {
+                paletteOverlay(page)
+            }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 6) {
                 CanvasCommandBar(
-                    document: document,
-                    showMaterials: $showMaterials,
-                    showMorphs: $showMorphs,
-                    showLights: $showLights,
-                    isRecording: recorder.isRecording,
-                    onMotion: { showMotionLibrary = true },
-                    onBones: { showBones = true },
-                    onTextures: { showTextures = true },
-                    onScene: { showSceneEditor = true },
-                    onRenderStudio: { showRenderStudio = true },
-                    onExport: { showExportStudio = true },
-                    onSettings: { showSettings = true },
-                    onPose: { showPoseImporter = true },
-                    onResetCamera: {
-                        NotificationCenter.default.post(name: .mmdResetCamera, object: nil)
-                        toast = "视角已重置"
-                    },
-                    onPhoto: {
-                        NotificationCenter.default.post(name: .mmdCapturePhoto,
-                                                        object: NSNumber(value: document.renderSettings.photoScale))
-                    },
-                    onRecord: {
-                        if recorder.isRecording {
-                            recorder.stop()
-                            toast = "正在保存引擎录制…"
-                        } else {
-                            recorder.start()
-                            toast = "开始引擎录制（不含界面控件）"
-                        }
-                    }
+                    hasMotion: document.hasMotion,
+                    physicsActive: document.renderSettings.showRigidBodies
+                        || document.physicsSettings.mode != .off,
+                    activePage: palettePage,
+                    showMaterials: showMaterials,
+                    showMorphs: showMorphs,
+                    showLights: showLights,
+                    onMotion: { closePalette(); showMotionLibrary = true },
+                    onMaterials: { closePalette(); showMaterials = true },
+                    onMorphs: { closePalette(); showMorphs = true },
+                    onLights: { closePalette(); showLights = true },
+                    onPage: { openPalette($0) }
                 )
                 compactPlaybackBar
             }
@@ -258,23 +246,8 @@ struct ModelViewerView: View {
         .sheet(isPresented: $showMotionLibrary) {
             MotionLibraryPicker(document: document)
         }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button { showExportStudio = true } label: {
-                        Label("导出工作室", systemImage: "square.and.arrow.up.on.square")
-                    }
-                    Button { showPoseImporter = true } label: {
-                        Label("导入 VPD 姿势", systemImage: "figure.stand")
-                    }
-                    Button { document.resetPhysics() } label: {
-                        Label("重置物理", systemImage: "arrow.counterclockwise")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
-            }
-        }
+        // 原来这里还有一个「导出 / 导入姿势 / 重置物理」的导航栏 Menu。它的三项
+        // 在「更多」浮层里都有；留着只是多一个会被画布刷新打断的下拉菜单。
         .alert("动作加载失败", isPresented: Binding(get: { motionError != nil },
                                                    set: { if !$0 { motionError = nil } })) {
             Button("好", role: .cancel) {}
@@ -395,6 +368,80 @@ struct ModelViewerView: View {
         showSettings = false
     }
 
+    // MARK: - 画布浮层（物理 / 更多 / 播放）
+
+    @ViewBuilder
+    private func paletteOverlay(_ page: CanvasPalette.Page) -> some View {
+        // 点画布空白处收起。这一层故意做成几乎透明的暗色：面板背后还能看清
+        // 模型当前的样子，调参数不用来回开关。
+        Color.black.opacity(0.16)
+            .ignoresSafeArea()
+            .onTapGesture { closePalette() }
+            .transition(.opacity)
+
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+            CanvasPalette(page: page,
+                          document: document,
+                          isRecording: recorder.isRecording,
+                          onAction: handlePaletteAction,
+                          onClose: closePalette)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 6)
+        }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private func openPalette(_ page: CanvasPalette.Page) {
+        // 再点一次同一个入口就收起，和系统菜单的手感一致。
+        if palettePage == page { closePalette(); return }
+        if !inspectorIsOpen { document.canvasLift = 0.30 }
+        withAnimation(.easeOut(duration: 0.2)) { palettePage = page }
+    }
+
+    private func closePalette() {
+        guard palettePage != nil else { return }
+        withAnimation(.easeIn(duration: 0.16)) { palettePage = nil }
+        // 面板自己的 onAppear/onDisappear 不管抬升量，这里统一交还给画布。
+        if !inspectorIsOpen { document.canvasLift = 0 }
+    }
+
+    private func handlePaletteAction(_ action: CanvasPalette.Action) {
+        // 先收面板再开 sheet：两个呈现叠在一起时，sheet 的毛玻璃会拍到面板，
+        // 看起来像闪了一下。
+        closePalette()
+        switch action {
+        case .motionLibrary: showMotionLibrary = true
+        case .bones: showBones = true
+        case .textures: showTextures = true
+        case .scene: showSceneEditor = true
+        case .renderStudio: showRenderStudio = true
+        case .exportStudio: showExportStudio = true
+        case .pose: showPoseImporter = true
+        case .settings: showSettings = true
+        case .photo:
+            NotificationCenter.default.post(name: .mmdCapturePhoto,
+                                            object: NSNumber(value: document.renderSettings.photoScale))
+        case .record:
+            if recorder.isRecording {
+                recorder.stop()
+                showToast("正在保存引擎录制…")
+            } else {
+                recorder.start()
+                showToast("开始引擎录制（不含界面控件）")
+            }
+        case .resetCamera:
+            NotificationCenter.default.post(name: .mmdResetCamera, object: nil)
+            showToast("视角已重置")
+        case .resetPhysics:
+            document.resetPhysics()
+            showToast("物理已重置")
+        case .removeMotion:
+            document.removeMotion()
+            showToast("已移除动作")
+        }
+    }
+
     private var compactPlaybackBar: some View {
         HStack(spacing: 8) {
             if document.hasMotion {
@@ -425,35 +472,18 @@ struct ModelViewerView: View {
                     .foregroundStyle(.white.opacity(0.55))
                     .frame(minWidth: 36, alignment: .trailing)
 
-                Menu {
-                    Toggle("循环播放", isOn: Binding(get: { document.loopPlayback },
-                                                    set: { document.loopPlayback = $0 }))
-                    Menu("播放速度") {
-                        ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { speed in
-                            Button(String(format: "%.1fx", speed)) {
-                                document.playbackSpeed = Float(speed)
-                            }
-                        }
-                    }
-                    if document.hasCameraMotion {
-                        Toggle("使用 VMD 相机", isOn: Binding(get: { document.useCameraMotion },
-                                                            set: { document.useCameraMotion = $0 }))
-                    }
-                    Button { showMotionLibrary = true } label: {
-                        Label("动作库 / 更换动作", systemImage: "arrow.triangle.2.circlepath")
-                    }
-                    Button { showPoseImporter = true } label: {
-                        Label("导入 VPD 姿势", systemImage: "figure.stand")
-                    }
-                    Button { document.removeMotion() } label: {
-                        Label("移除动作", systemImage: "trash")
-                    }
+                Button {
+                    openPalette(.playback)
                 } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 18))
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.system(size: 15, weight: .semibold))
                         .frame(width: 30, height: 30)
+                        .foregroundStyle(palettePage == .playback
+                                         ? Color(red: 0.38, green: 0.90, blue: 0.98)
+                                         : Color.white.opacity(0.85))
                 }
-                .foregroundStyle(.white.opacity(0.85))
+                .buttonStyle(.plain)
+                .accessibilityLabel("播放设置")
             } else {
                 // 没动作时不再放一个「选择动作」按钮：底栏第一格就是动作，
                 // 两个入口做同一件事只会让人犹豫点哪个。
@@ -620,51 +650,58 @@ private struct StylePresetStrip: View {
 /// 旧版本把十二个入口塞进一条可横向滚动的窄条：不滑动根本看不到「骨架」
 /// 「刚体」，而且材质、渲染、设置混在一起，没有分组。现在固定六格、一屏
 /// 看全 —— 动作、材质、表情、灯光四个高频面板，加上物理和更多。
+///
+/// 这里只负责「打开什么」，不持有 document：命令栏以前观察着文档，画布的
+/// 性能统计每 0.5 秒发布一次，整条栏连同里面的下拉菜单被重建，菜单刚展开
+/// 就复位。
 private struct CanvasCommandBar: View {
 
-    @ObservedObject var document: MMDModelDocument
-    @Binding var showMaterials: Bool
-    @Binding var showMorphs: Bool
-    @Binding var showLights: Bool
-    let isRecording: Bool
+    let hasMotion: Bool
+    let physicsActive: Bool
+    let activePage: CanvasPalette.Page?
+    let showMaterials: Bool
+    let showMorphs: Bool
+    let showLights: Bool
     let onMotion: () -> Void
-    let onBones: () -> Void
-    let onTextures: () -> Void
-    let onScene: () -> Void
-    let onRenderStudio: () -> Void
-    let onExport: () -> Void
-    let onSettings: () -> Void
-    let onPose: () -> Void
-    let onResetCamera: () -> Void
-    let onPhoto: () -> Void
-    let onRecord: () -> Void
+    let onMaterials: () -> Void
+    let onMorphs: () -> Void
+    let onLights: () -> Void
+    let onPage: (CanvasPalette.Page) -> Void
 
     private var accent: Color { Color(red: 0.38, green: 0.90, blue: 0.98) }
 
     var body: some View {
         HStack(spacing: 0) {
             Button(action: onMotion) {
-                cell("figure.walk", "动作", active: document.hasMotion)
+                cell("figure.walk", "动作", active: hasMotion)
             }
             .buttonStyle(.plain)
 
-            Button { showMaterials = true } label: {
+            Button(action: onMaterials) {
                 cell("paintpalette", "材质", active: showMaterials)
             }
             .buttonStyle(.plain)
 
-            Button { showMorphs = true } label: {
+            Button(action: onMorphs) {
                 cell("face.smiling", "表情", active: showMorphs)
             }
             .buttonStyle(.plain)
 
-            Button { showLights = true } label: {
+            Button(action: onLights) {
                 cell("lightbulb", "灯光", active: showLights)
             }
             .buttonStyle(.plain)
 
-            physicsMenu
-            moreMenu
+            Button { onPage(.physics) } label: {
+                cell("circle.hexagongrid", "物理",
+                     active: physicsActive || activePage == .physics)
+            }
+            .buttonStyle(.plain)
+
+            Button { onPage(.more) } label: {
+                cell("ellipsis.circle", "更多", active: activePage == .more)
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 4)
         .padding(.vertical, 3)
@@ -672,72 +709,6 @@ private struct CanvasCommandBar: View {
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
             .stroke(Color.white.opacity(0.08), lineWidth: 1))
         .padding(.horizontal, 8)
-    }
-
-    /// 物理既是最常调的调试项，也是「显示刚体」的开关所在地，
-    /// 所以做成菜单，省掉「进设置 → 找物理 → 再翻回来」的往返。
-    private var physicsMenu: some View {
-        Menu {
-            Picker("物理模式", selection: $document.physicsSettings.mode) {
-                ForEach(MMDPhysicsMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            Divider()
-            Toggle(isOn: $document.renderSettings.showRigidBodies) {
-                Label("显示刚体", systemImage: "circle.hexagongrid")
-            }
-            Toggle(isOn: $document.renderSettings.showPhysicsColliders) {
-                Label("显示碰撞球", systemImage: "circle.dotted")
-            }
-            Divider()
-            Button { document.resetPhysics() } label: {
-                Label("重置物理", systemImage: "arrow.triangle.2.circlepath")
-            }
-        } label: {
-            cell("circle.hexagongrid",
-                 "物理",
-                 active: document.renderSettings.showRigidBodies || document.physicsSettings.mode != .off)
-        }
-        .tint(.white)
-    }
-
-    private var moreMenu: some View {
-        Menu {
-            Section("检查器") {
-                Button(action: onBones) { Label("骨骼列表", systemImage: "figure.stand") }
-                Button(action: onTextures) { Label("贴图清单", systemImage: "photo.on.rectangle.angled") }
-                Button(action: onScene) { Label("场景与背景", systemImage: "cube.transparent") }
-                Button(action: onRenderStudio) { Label("渲染工作台", systemImage: "slider.horizontal.3") }
-            }
-            Section("画布") {
-                Button(action: onResetCamera) { Label("重置视角", systemImage: "arrow.counterclockwise") }
-                Toggle(isOn: $document.renderSettings.showGrid) {
-                    Label("地面网格", systemImage: "grid")
-                }
-                Toggle(isOn: $document.renderSettings.showGroundShadow) {
-                    Label("地面阴影", systemImage: "circle.dashed")
-                }
-                Toggle(isOn: $document.renderSettings.showPerformanceHUD) {
-                    Label("性能监控", systemImage: "speedometer")
-                }
-            }
-            Section("输出") {
-                Button(action: onPhoto) { Label("保存渲染图", systemImage: "camera.fill") }
-                Button(action: onRecord) {
-                    Label(isRecording ? "停止录制" : "录制视频",
-                          systemImage: isRecording ? "stop.circle" : "record.circle")
-                }
-                Button(action: onExport) { Label("导出工作室", systemImage: "square.and.arrow.up") }
-            }
-            Section {
-                Button(action: onPose) { Label("导入 VPD 姿势", systemImage: "figure.stand") }
-                Button(action: onSettings) { Label("全部设置", systemImage: "gearshape") }
-            }
-        } label: {
-            cell("ellipsis.circle", "更多")
-        }
-        .tint(.white)
     }
 
     private func cell(_ symbol: String, _ label: String, active: Bool = false) -> some View {
@@ -752,6 +723,292 @@ private struct CanvasCommandBar: View {
         .frame(height: 44)
         .foregroundStyle(active ? accent : Color.white.opacity(0.85))
         .contentShape(Rectangle())
+    }
+}
+
+/// 画布浮层面板：物理 / 更多 / 播放。
+///
+/// 为什么不用 `Menu`：下拉菜单由 UIKit 承载，SwiftUI 只是往里填内容。宿主
+/// 视图被每秒刷新的性能统计重建时，菜单内容也跟着重建 —— 表现就是打开后
+/// 不停闪烁、滚动位置反复回到顶部，「更多」里靠上的条目根本点不到。换成
+/// 画布内的普通浮层之后，状态只存在 `@State` 里，重建只是重绘：能滚、能停、
+/// 也不会把整块画布盖住。
+private struct CanvasPalette: View {
+
+    enum Page: String, Identifiable {
+        case physics, more, playback
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .physics: return "物理"
+            case .more: return "更多"
+            case .playback: return "播放"
+            }
+        }
+
+        /// 面板高度取内容量级：物理三项、播放四组、更多十几行（超出就滚动）。
+        var height: CGFloat {
+            switch self {
+            case .physics: return 306
+            case .playback: return 342
+            case .more: return 420
+            }
+        }
+    }
+
+    /// 面板里除开关以外、需要由画布执行的动作。
+    enum Action {
+        case motionLibrary, bones, textures, scene, renderStudio, exportStudio
+        case photo, record, pose, settings, resetCamera, resetPhysics, removeMotion
+    }
+
+    let page: Page
+    @ObservedObject var document: MMDModelDocument
+    let isRecording: Bool
+    let onAction: (Action) -> Void
+    let onClose: () -> Void
+
+    private var accent: Color { Color(red: 0.38, green: 0.90, blue: 0.98) }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 0.5)
+            ScrollView {
+                VStack(spacing: 0) { content }
+                    .padding(.bottom, 8)
+            }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+        .frame(height: page.height)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+            .stroke(Color.white.opacity(0.10), lineWidth: 1))
+        .shadow(color: .black.opacity(0.35), radius: 18, y: 8)
+        .environment(\.colorScheme, .dark)
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Text(page.title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.92))
+            Spacer(minLength: 0)
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .bold))
+                    .frame(width: 26, height: 26)
+                    .background(.white.opacity(0.10), in: Circle())
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.white.opacity(0.75))
+            .accessibilityLabel("关闭面板")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch page {
+        case .physics: physicsContent
+        case .more: moreContent
+        case .playback: playbackContent
+        }
+    }
+
+    // MARK: 物理
+
+    @ViewBuilder
+    private var physicsContent: some View {
+        sectionHeader("解算模式")
+        VStack(alignment: .leading, spacing: 7) {
+            Picker("解算模式", selection: $document.physicsSettings.mode) {
+                ForEach(MMDPhysicsMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text(document.physicsSettings.mode.detail)
+                .font(.system(size: 10))
+                .foregroundStyle(.white.opacity(0.5))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 6)
+
+        sectionHeader("显示")
+        toggleRow("circle.hexagongrid", "显示刚体", isOn: $document.renderSettings.showRigidBodies)
+        hairline
+        toggleRow("circle.dotted", "显示碰撞球", isOn: $document.renderSettings.showPhysicsColliders)
+
+        sectionHeader("操作")
+        row("arrow.triangle.2.circlepath", "重置物理", detail: "把刚体与弹簧链放回初始状态") {
+            onAction(.resetPhysics)
+        }
+    }
+
+    // MARK: 更多
+
+    @ViewBuilder
+    private var moreContent: some View {
+        sectionHeader("检查器")
+        row("slider.horizontal.3", "渲染工作台") { onAction(.renderStudio) }
+        hairline
+        row("cube.transparent", "场景与背景") { onAction(.scene) }
+        hairline
+        row("photo.on.rectangle.angled", "贴图清单") { onAction(.textures) }
+        hairline
+        row("figure.stand", "骨骼列表") { onAction(.bones) }
+
+        sectionHeader("画布")
+        row("arrow.counterclockwise", "重置视角") { onAction(.resetCamera) }
+        hairline
+        toggleRow("grid", "地面网格", isOn: $document.renderSettings.showGrid)
+        hairline
+        toggleRow("circle.dashed", "地面阴影", isOn: $document.renderSettings.showGroundShadow)
+        hairline
+        toggleRow("speedometer", "性能监控", isOn: $document.renderSettings.showPerformanceHUD)
+
+        sectionHeader("输出")
+        row("camera.fill", "保存渲染图") { onAction(.photo) }
+        hairline
+        row(isRecording ? "stop.circle" : "record.circle",
+            isRecording ? "停止录制" : "录制视频") { onAction(.record) }
+        hairline
+        row("square.and.arrow.up", "导出工作室") { onAction(.exportStudio) }
+
+        sectionHeader("其它")
+        row("figure.stand", "导入 VPD 姿势") { onAction(.pose) }
+        hairline
+        row("gearshape", "全部设置") { onAction(.settings) }
+    }
+
+    // MARK: 播放
+
+    @ViewBuilder
+    private var playbackContent: some View {
+        sectionHeader("播放")
+        toggleRow("repeat", "循环播放", isOn: $document.loopPlayback)
+        hairline
+        VStack(alignment: .leading, spacing: 6) {
+            Text("播放速度")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.94))
+            Picker("播放速度", selection: Binding(
+                get: { Double(document.playbackSpeed) },
+                set: { document.playbackSpeed = Float($0) })) {
+                ForEach([0.5, 1.0, 1.5, 2.0], id: \.self) { speed in
+                    Text(String(format: "%.1fx", speed)).tag(speed)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+
+        if document.hasCameraMotion {
+            sectionHeader("相机")
+            toggleRow("video", "使用 VMD 相机", isOn: $document.useCameraMotion)
+        }
+
+        sectionHeader("动作")
+        row("arrow.triangle.2.circlepath", "动作库 / 更换动作") { onAction(.motionLibrary) }
+        hairline
+        row("figure.stand", "导入 VPD 姿势") { onAction(.pose) }
+        hairline
+        row("trash", "移除动作", tint: .red) { onAction(.removeMotion) }
+    }
+
+    // MARK: 行样式
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.42))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.top, 11)
+            .padding(.bottom, 3)
+    }
+
+    private var hairline: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.06))
+            .frame(height: 0.5)
+            .padding(.leading, 50)
+    }
+
+    private func row(_ symbol: String, _ title: String, detail: String? = nil,
+                     tint: Color? = nil, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 11) {
+                Image(systemName: symbol)
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 24)
+                    .foregroundStyle(tint ?? accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.94))
+                    if let detail {
+                        Text(detail)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.white.opacity(0.45))
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 14)
+            .frame(height: detail == nil ? 42 : 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func toggleRow(_ symbol: String, _ title: String,
+                           isOn: Binding<Bool>) -> some View {
+        HStack(spacing: 11) {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .semibold))
+                .frame(width: 24)
+                .foregroundStyle(isOn.wrappedValue ? accent : .white.opacity(0.55))
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.94))
+            Spacer(minLength: 4)
+            switchIndicator(isOn.wrappedValue)
+        }
+        .padding(.horizontal, 14)
+        .frame(height: 42)
+        // 整行可点。开关不交给 Toggle 控件：它自己的手势会和整行的手势打架，
+        // 点一下被判定两次，等于没点。
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeOut(duration: 0.16)) { isOn.wrappedValue.toggle() }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(isOn.wrappedValue ? .isButton : AccessibilityTraits())
+        .accessibilityAddTraits(isOn.wrappedValue ? .isSelected : AccessibilityTraits())
+    }
+
+    private func switchIndicator(_ on: Bool) -> some View {
+        Capsule()
+            .fill(on ? accent : Color.white.opacity(0.18))
+            .frame(width: 42, height: 25)
+            .overlay(alignment: on ? .trailing : .leading) {
+                Circle()
+                    .fill(.white)
+                    .frame(width: 19, height: 19)
+                    .padding(.horizontal, 3)
+            }
     }
 }
 

@@ -873,7 +873,15 @@ final class MMDSpringPhysics {
             if parent < 0 || parent >= model.bones.count || parent == index { return -1 }
             return parent
         }
-        restLocal = model.bones.map { $0.position }
+        // PMX 的「骨骼位置」是模型空间里的绝对坐标，不是相对父骨骼的偏移。
+        // 这里要的是局部偏移：只把绝对值直接塞进 restLocal，下面按父骨骼累加
+        // 时就会把祖先的位置再算一遍 —— 一个 20 单位高的角色，胸口会被算到
+        // 40 以上，碰撞球整片飘到头顶上方，弹簧链的锚点也跟着跑出体外。
+        restLocal = model.bones.enumerated().map { index, bone in
+            let parent = parentIndices[index]
+            guard parent >= 0, parent < model.bones.count else { return bone.position }
+            return bone.position - model.bones[parent].position
+        }
         restWorldPos = [SIMD3<Float>](repeating: .zero, count: boneCount)
         worldPos = [SIMD3<Float>](repeating: .zero, count: boneCount)
         poseQuat = [simd_quatf](repeating: mmdIdentityQuaternion, count: boneCount)

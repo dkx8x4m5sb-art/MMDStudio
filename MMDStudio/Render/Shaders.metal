@@ -600,7 +600,10 @@ fragment float4 mmd_backdrop_fragment(BackdropOut in [[stage_in]],
 fragment float4 mmd_backdrop_image_fragment(BackdropOut in [[stage_in]],
                                             texture2d<float> image [[texture(0)]],
                                             constant float4 &params [[buffer(0)]]) {
-    float2 uv = float2(in.uv.x, 1.0 - in.uv.y);
+    // 纹理上传时已经翻过行（decodeCGImage 里做的那次 translate/scale），
+    // 内存第 0 行是图像的**底边**，与 GL/MMD 的 v=0 一致。这里再翻一次
+    // 等于把照片上下颠倒 —— 导入的背景图整幅倒过来就是这个原因。
+    float2 uv = in.uv;
     float imageAspect = max(0.0001, params.x);
     float viewAspect = max(0.0001, params.y);
     float2 scale = (imageAspect > viewAspect)
