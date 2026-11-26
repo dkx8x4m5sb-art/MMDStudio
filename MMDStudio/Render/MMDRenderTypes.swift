@@ -29,7 +29,7 @@ struct MMDSceneUniforms {
     var worldGroundColor: SIMD4<Float> = SIMD4<Float>(0.18, 0.14, 0.12, 1)
     /// x: outline width in pixels, y: specular strength, z: skin scatter,
     /// w: shadow hue shift.
-    var renderParams: SIMD4<Float> = SIMD4<Float>(1.6, 0.55, 0.35, 0.35)
+    var renderParams: SIMD4<Float> = SIMD4<Float>(2.6, 0.55, 0.35, 0.35)
     var lights: (MMDLightUniform, MMDLightUniform, MMDLightUniform, MMDLightUniform,
                  MMDLightUniform, MMDLightUniform, MMDLightUniform, MMDLightUniform) = MMDLightUniform.defaultTuple
 }
@@ -492,7 +492,7 @@ struct MMDRenderSettings {
     var toonShadowTint: SIMD4<Float> = SIMD4<Float>(0.60, 0.57, 0.66, 0.60)
     /// Screen-space outline thickness in pixels. Unlike a world-space shell this
     /// keeps the line weight identical at every camera distance.
-    var outlineWidth: Float = 1.6
+    var outlineWidth: Float = 2.6
     /// Ladder highlight strength for the cel shader.
     var specularStrength: Float = 0.55
     /// Warm light bleeding at the terminator, used by skin and thin cloth.

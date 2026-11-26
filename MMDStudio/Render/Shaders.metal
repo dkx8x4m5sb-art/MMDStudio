@@ -419,7 +419,10 @@ vertex EdgeVertexOut mmd_edge_vertex(uint vid [[vertex_id]],
     float2 direction = viewNormal.xy;
     float magnitude = length(direction);
     direction = magnitude > 0.0001 ? direction / magnitude : float2(0.0, 1.0);
-    float pixels = max(0.4, scene.renderParams.x)
+    // Width is specified against a 1080p frame so the line keeps the same
+    // relative weight on a phone and on a 4K export.
+    float resolutionScale = max(0.5, scene.viewportSize.y / 1080.0);
+    float pixels = max(0.4, scene.renderParams.x * resolutionScale)
                  * clamp(mat.edgeSize, 0.25, 4.0)
                  * clamp(edgeScales[vid], 0.15, 4.0)
                  * clamp(scene.params.z, 0.0, 4.0);

@@ -958,7 +958,7 @@ struct RenderStudioView: View {
                     Toggle("启用反壳描边", isOn: $document.renderSettings.edgesEnabled)
                     HStack {
                         Text("描边像素宽")
-                        Slider(value: bind(\.outlineWidth), in: 0.4...4.0)
+                        Slider(value: bind(\.outlineWidth), in: 0.6...8.0)
                         Text(String(format: "%.1f px", document.renderSettings.outlineWidth)).captionValue()
                     }
                     HStack {
