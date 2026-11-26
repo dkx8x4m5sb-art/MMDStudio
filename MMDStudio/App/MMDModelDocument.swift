@@ -279,6 +279,10 @@ final class MMDModelDocument: ObservableObject, Identifiable {
 
     var physicsBodyCount: Int { springPhysics.solvedRigidBodyCount }
     var physicsJointCount: Int { springPhysics.solvedJointCount }
+    /// Every body in the PMX file, including the mode-0 colliders that never
+    /// move. Telling "0 simulated" from "0 authored" matters when a model
+    /// looks like physics does nothing.
+    var totalRigidBodyCount: Int { springPhysics.totalRigidBodyCount }
     /// Bones the spring chains actually drive. Zero means the physics switch
     /// has nothing to move, which is what "physics does nothing" usually is.
     var clothBoneCount: Int { springPhysics.clothBoneCount }

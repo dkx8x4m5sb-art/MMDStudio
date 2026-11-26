@@ -189,8 +189,9 @@ struct SettingsInspectorView: View {
                                 value: $document.physicsSettings.substeps, in: 1...4)
                     }
                     LabeledContent("布料链 / 骨骼", value: "\(document.clothChainCount) / \(document.clothBoneCount)")
-                    LabeledContent("碰撞胶囊", value: "\(document.physicsColliderCount)")
-                    LabeledContent("PMX 动态刚体", value: "\(document.physicsBodyCount)")
+                    LabeledContent("碰撞球", value: "\(document.physicsColliderCount)")
+                    LabeledContent("PMX 刚体（演算 / 全部）",
+                                   value: "\(document.physicsBodyCount) / \(document.totalRigidBodyCount)")
                     LabeledContent("PMX 关节", value: "\(document.physicsJointCount)")
                     if !document.clothChainSummary.isEmpty {
                         LabeledContent("链类型", value: document.clothChainSummary)
@@ -210,7 +211,7 @@ struct SettingsInspectorView: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
-                    Text("摆动模式给每节链骨一个角速度：重力、风力、身体拖拽把它的方向推离动画姿势，弹簧再把它拉回来，方向本身带两个硬边界——相邻节之间不许超过「作者弯角＋最大摆角」，整条链离原始剪影不超过设定预算。所以它只会小幅滞后与回摆，不会越跑越远。躯干、头、上下臂、大腿小腿都有胶囊碰撞；起点本来就贴在身体上的链节不参与碰撞，免得裙摆被撑开。")
+                    Text("PMX 刚体模式把模型自带的刚体与 6DOF 关节交给 Bullet 解算——作者调好的质量、阻尼、弹性、碰撞组和关节限位原样生效，和 MMD 本体是同一套引擎。模型没带刚体时（多数从游戏提取的模型）自动回退到链式摆动：每节链骨只存一个方向和一个角速度，相邻节不许超过「作者弯角＋最大摆角」，整条链离原始剪影不超过设定预算，所以不会越跑越远。两种模式的碰撞体都是从蒙皮顶点实测的多球链，腿和手臂的粗细来自真实顶点分布；本来贴在身体里的链节不参与碰撞，免得裙摆被撑开。")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

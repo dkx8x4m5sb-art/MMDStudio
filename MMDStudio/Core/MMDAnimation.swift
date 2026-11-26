@@ -604,7 +604,7 @@ final class MMDSpringPhysics {
     private var floorY: Float = 0
 
     private var chains: [Chain] = []
-    private var capsules: [Capsule] = []
+    private var colliderSpheres: [ColliderSphere] = []
     private var ikBones: Set<Int> = []
 
     private var lastTime: CFTimeInterval = 0
@@ -737,12 +737,6 @@ final class MMDSpringPhysics {
         /// Anchor velocity for this frame, clamped. Sampled once per frame so
         /// the trailing drag does not depend on how many substeps run.
         var velocity: SIMD3<Float>
-    }
-
-    private struct Capsule {
-        var boneA: Int
-        var boneB: Int
-        var radius: Float
     }
 
     // MARK: - Rigid bodies
@@ -905,8 +899,23 @@ final class MMDSpringPhysics {
 
     // MARK: - Colliders
 
+    /// One collision sphere on a body bone.
+    ///
+    /// A single capsule per limb has one radius for its whole length, so a
+    /// thigh is either too fat at the knee or too thin at the hip — the hem
+    /// clips through the gap in both cases. A chain of spheres lets the radius
+    /// follow the limb, and the radius is measured from the mesh instead of
+    /// guessed from the model height.
+    private struct ColliderSphere {
+        var bone: Int
+        /// Centre in the bone's frame (bones carry no rest rotation, so this
+        /// is a plain offset from the bone's rest world position).
+        var offset: SIMD3<Float>
+        var radius: Float
+    }
+
     private func buildColliders(model: PMXModel) {
-        capsules.removeAll()
+        colliderSpheres.removeAll()
         let height = modelHeight
 
         func first(_ keys: [String], side: Int = 0) -> Int {
@@ -921,51 +930,103 @@ final class MMDSpringPhysics {
             return -1
         }
 
+        // Vertices bucketed by every bone that claims at least 15% of them, in
+        // one pass. A skirt panel usually keeps a slice of its weight on the
+        // thigh, so a segment has to look at both of its bones.
+        var byBone = [Int: [Int]]()
+        for (index, vertex) in model.vertices.enumerated() {
+            for slot in 0..<4 where vertex.boneWeights[slot] > 0.15 {
+                let bone = Int(vertex.boneIndices[slot])
+                guard bone >= 0 && bone < boneCount else { continue }
+                byBone[bone, default: []].append(index)
+            }
+        }
+
+        /// 65th percentile distance from the bone axis. The mean is pulled
+        /// around by a handful of skirt verts; the max is worse. 65% is the
+        /// knee of the distribution for a limb.
+        func meshRadius(_ boneA: Int, _ boneB: Int,
+                        _ start: SIMD3<Float>, _ axis: SIMD3<Float>, _ length: Float,
+                        _ t0: Float, _ t1: Float, fallback: Float) -> Float {
+            var samples: [Float] = []
+            var seen = Set<Int>()
+            for bone in [boneA, boneB] where bone >= 0 {
+                for vertex in byBone[bone] ?? [] where seen.insert(vertex).inserted {
+                    let relative = model.vertices[vertex].position - start
+                    let t = simd_dot(relative, axis) / max(length, 1e-5)
+                    guard t >= t0 - 0.1 && t <= t1 + 0.1 else { continue }
+                    samples.append(simd_length(relative - axis * simd_dot(relative, axis)))
+                }
+            }
+            guard samples.count >= 10 else { return fallback }
+            samples.sort()
+            let pick = min(samples.count - 1, Int(Float(samples.count) * 0.65))
+            // Hard ceiling: cloth that keeps a slice of thigh weight sits well
+            // outside the leg, and letting it set the radius inflates the
+            // collider until the skirt is pushed away from the body.
+            return min(samples[pick], height * 0.10)
+        }
+
+        func addSegment(_ boneA: Int, _ boneB: Int, pieces: Int, fallback: Float) {
+            guard boneA >= 0, boneA < restWorldPos.count else { return }
+            let start = restWorldPos[boneA]
+            let target = (boneB >= 0 && boneB < restWorldPos.count) ? restWorldPos[boneB] : start
+            var direction = target - start
+            var length = simd_length(direction)
+            if length < 1e-5 {
+                // Head and similar zero-length anchors: aim up so the spheres
+                // still cover a volume instead of stacking on one point.
+                direction = SIMD3<Float>(0, 1, 0)
+                length = max(height * 0.05, 0.1)
+            }
+            direction /= length
+
+            for piece in 0..<pieces {
+                let t0 = Float(piece) / Float(pieces)
+                let t1 = Float(piece + 1) / Float(pieces)
+                let centre = start + direction * (length * (t0 + t1) * 0.5)
+                let radius = meshRadius(boneA, boneB, start, direction, length,
+                                        t0, t1, fallback: fallback)
+                colliderSpheres.append(ColliderSphere(bone: boneA,
+                                                      offset: centre - start,
+                                                      radius: max(height * 0.008, radius)))
+            }
+        }
+
         let hips = first(["下半身", "lowerbody", "lower body", "hips", "hip", "pelvis", "腰"])
         let chest = first(["上半身2", "upperbody2", "upper body2", "chest", "胸", "上半身", "upperbody", "spine"])
         let head = first(["頭", "head"])
         let neck = first(["首", "neck"])
-        // Torso: both endpoints have to resolve. A capsule anchored at the
-        // link's own root pushes the whole skirt outward instead of stopping
-        // clipping.
-        if hips >= 0 && chest >= 0 {
-            capsules.append(Capsule(boneA: hips, boneB: chest, radius: height * 0.072))
-        }
-        // Head. Without it a ponytail swings straight through the skull.
-        if head >= 0 {
-            capsules.append(Capsule(boneA: head, boneB: head, radius: height * 0.058))
-        }
-        if neck >= 0 && head >= 0 {
-            capsules.append(Capsule(boneA: neck, boneB: head, radius: height * 0.032))
-        }
-        // Arms. Ribbons and long sleeves hang off the shoulders and pass right
-        // through an upper arm / forearm when there is no collider there,
-        // which is the clipping seen on the shoulder straps.
+        addSegment(hips, chest, pieces: 4, fallback: height * 0.070)
+        addSegment(head, head, pieces: 2, fallback: height * 0.058)
+        addSegment(neck, head, pieces: 2, fallback: height * 0.030)
+
         for side in [-1, 1] {
             let shoulder = first(["肩", "shoulder", "clavicle"], side: side)
             let upperArm = first(["腕", "upperarm", "upper arm", "arm"], side: side)
             let elbow = first(["ひじ", "肘", "elbow", "forearm"], side: side)
             let wrist = first(["手首", "wrist", "hand"], side: side)
-            if shoulder >= 0 && upperArm >= 0 && upperArm != shoulder {
-                capsules.append(Capsule(boneA: shoulder, boneB: upperArm, radius: height * 0.030))
-            }
-            if upperArm >= 0 && elbow >= 0 && elbow != upperArm {
-                capsules.append(Capsule(boneA: upperArm, boneB: elbow, radius: height * 0.028))
-            }
-            if elbow >= 0 && wrist >= 0 && wrist != elbow {
-                capsules.append(Capsule(boneA: elbow, boneB: wrist, radius: height * 0.022))
-            }
             let thigh = first(["もも", "thigh", "upleg", "upperleg", "大腿"], side: side)
             let knee = first(["ひざ", "knee", "shin", "calf", "すね", "小腿"], side: side)
             let ankle = first(["足首", "ankle", "foot", "足"], side: side)
+
+            if shoulder >= 0 && upperArm >= 0 && upperArm != shoulder {
+                addSegment(shoulder, upperArm, pieces: 2, fallback: height * 0.030)
+            }
+            if upperArm >= 0 && elbow >= 0 && elbow != upperArm {
+                addSegment(upperArm, elbow, pieces: 3, fallback: height * 0.028)
+            }
+            if elbow >= 0 && wrist >= 0 && wrist != elbow {
+                addSegment(elbow, wrist, pieces: 3, fallback: height * 0.022)
+            }
             if thigh >= 0 && knee >= 0 {
-                capsules.append(Capsule(boneA: thigh, boneB: knee, radius: height * 0.042))
+                addSegment(thigh, knee, pieces: 3, fallback: height * 0.042)
             }
             if knee >= 0 && ankle >= 0 {
-                capsules.append(Capsule(boneA: knee, boneB: ankle, radius: height * 0.034))
+                addSegment(knee, ankle, pieces: 3, fallback: height * 0.034)
             }
         }
-        colliderCount = capsules.count
+        colliderCount = colliderSpheres.count
     }
 
     private static func sideSign(_ lower: String) -> Int {
@@ -1458,19 +1519,20 @@ final class MMDSpringPhysics {
 
     private func pushOut(_ point: SIMD3<Float>) -> SIMD3<Float> {
         var result = point
-        for capsule in capsules {
-            let a = capsule.boneA >= 0 ? worldPos[capsule.boneA] : .zero
-            let b = capsule.boneB >= 0 ? worldPos[capsule.boneB] : a
-            let axis = b - a
-            let axisLengthSquared = simd_dot(axis, axis)
-            let t: Float = axisLengthSquared > 1e-8
-                ? max(0, min(1, simd_dot(result - a, axis) / axisLengthSquared)) : 0
-            let closest = a + axis * t
-            let offset = result - closest
-            let distance = simd_length(offset)
-            guard distance < capsule.radius else { continue }
+        for sphere in colliderSpheres {
+            let bone = sphere.bone
+            guard bone >= 0 && bone < boneCount else { continue }
+            // Posed, not solved: a collider belongs to the body, and letting a
+            // cloth bone drag its own collider around would chase the very
+            // particles it is supposed to stop.
+            let centre = worldPos[bone] + poseQuat[bone].act(sphere.offset)
+            let offset = result - centre
+            let distanceSquared = simd_dot(offset, offset)
+            let radius = sphere.radius
+            guard distanceSquared < radius * radius else { continue }
+            let distance = sqrt(distanceSquared)
             let normal = distance > 1e-5 ? offset / distance : SIMD3<Float>(0, 0, 1)
-            result = closest + normal * capsule.radius
+            result = centre + normal * radius
         }
         let floor = floorY + modelHeight * 0.002
         if result.y < floor { result.y = floor }
@@ -1481,15 +1543,11 @@ final class MMDSpringPhysics {
     /// A skirt root sits on the hips; pushing it out would inflate the whole
     /// skirt, so those particles opt out of collision.
     private func restsInside(_ point: SIMD3<Float>) -> Bool {
-        for capsule in capsules {
-            let a = capsule.boneA >= 0 ? restWorldPos[capsule.boneA] : .zero
-            let b = capsule.boneB >= 0 ? restWorldPos[capsule.boneB] : a
-            let axis = b - a
-            let axisLengthSquared = simd_dot(axis, axis)
-            let t: Float = axisLengthSquared > 1e-8
-                ? max(0, min(1, simd_dot(point - a, axis) / axisLengthSquared)) : 0
-            let closest = a + axis * t
-            if simd_length(point - closest) < capsule.radius * 1.05 { return true }
+        for sphere in colliderSpheres {
+            let bone = sphere.bone
+            guard bone >= 0 && bone < restWorldPos.count else { continue }
+            let centre = restWorldPos[bone] + sphere.offset
+            if simd_length(point - centre) < sphere.radius * 1.05 { return true }
         }
         return false
     }
