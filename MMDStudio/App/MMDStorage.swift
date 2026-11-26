@@ -317,13 +317,20 @@ enum MMDStorageScanner {
         var freed: Int64 = 0
         let logDirectory = studio("Logs")
         freed += size(of: logDirectory)
-        MMDLog.shared.clear()
+        logDirectoryPurge()
         for directory in [temporaryDirectory, cachesDirectory] {
             freed += removeContents(of: directory)
         }
         freed += removeLeftoverExports()
-        MMDLog.shared.info("Storage cache cleared: \(freed) bytes")
         return freed
+    }
+
+    /// Log first, then wipe: the record is useful if anything below throws, and
+    /// clearing last leaves an empty log directory instead of a hundred-byte
+    /// file that makes the cache number look non-zero right after a purge.
+    private static func logDirectoryPurge() {
+        MMDLog.shared.info("Storage cache purge requested")
+        MMDLog.shared.clear()
     }
 
     @discardableResult
