@@ -613,6 +613,8 @@ final class MMDSpringPhysics {
 
     private(set) var solvedRigidBodyCount = 0
     private(set) var solvedJointCount = 0
+    /// Every body in the PMX file, simulated or purely a collider.
+    private(set) var totalRigidBodyCount = 0
     /// Number of bones the chain solver drives. Surfaced in the inspector so
     /// "physics does nothing" can be told apart from "this model has no cloth
     /// bones".
@@ -745,27 +747,6 @@ final class MMDSpringPhysics {
 
     // MARK: - Rigid bodies
 
-    private struct RigidState {
-        var body: PMXRigidBody
-        var position: SIMD3<Float>
-        var restPosition: SIMD3<Float>
-        var rotation: simd_quatf
-        var restRotation: simd_quatf
-        var velocity: SIMD3<Float> = .zero
-        var angularVelocity: SIMD3<Float> = .zero
-    }
-
-    private struct JointLink {
-        var bodyA: Int
-        var bodyB: Int
-        var offset: SIMD3<Float>
-        var springPosition: SIMD3<Float>
-        var springRotation: SIMD3<Float>
-    }
-
-    private var rigidStates: [RigidState] = []
-    private var rigidStateByBody: [Int: Int] = [:]
-    private var joints: [JointLink] = []
     private var rigidBoneIndices: Set<Int> = []
 
     // MARK: - Keywords
@@ -839,11 +820,12 @@ final class MMDSpringPhysics {
         for index in chains.indices {
             chains[index].seeded = false
         }
-        for index in rigidStates.indices {
-            rigidStates[index].position = rigidStates[index].restPosition
-            rigidStates[index].rotation = rigidStates[index].restRotation
-            rigidStates[index].velocity = .zero
-            rigidStates[index].angularVelocity = .zero
+        if let world = bulletWorld {
+            for record in bulletBodies {
+                MMDPhysSetBodyTransform(world, record.handle,
+                                        record.restPosition.f3, record.restRotation.f4)
+                MMDPhysResetBody(world, record.handle)
+            }
         }
     }
 
@@ -908,7 +890,7 @@ final class MMDSpringPhysics {
 
         buildColliders(model: model)
         buildChains(model: model)
-        buildRigidBodies(model: model)
+        buildBulletWorld(model: model)
         reset()
 
         MMDLog.shared.info("Physics: \(clothChainCount) chains / \(drivenBoneCount) cloth bones, "
@@ -1268,7 +1250,7 @@ final class MMDSpringPhysics {
         // for game-ripped characters) used to do nothing at all. Fall back to
         // the chain solver so the switch is never a no-op.
         let useChains = settings.mode == .secondary
-            || (settings.mode == .rigid && rigidStates.isEmpty)
+            || (settings.mode == .rigid && !bulletActive)
         if useChains && !chains.isEmpty {
             if advance {
                 stepChains(settings: settings, dt: dt)
@@ -1278,9 +1260,9 @@ final class MMDSpringPhysics {
             emitChains(into: &result)
         }
 
-        if settings.mode == .rigid && !rigidStates.isEmpty {
-            if advance { stepRigidBodies(model: model, settings: settings, dt: dt) }
-            applyRigidBodies(to: &result, model: model, settings: settings)
+        if settings.mode == .rigid && bulletActive {
+            if advance { stepBullet(dt: dt) }
+            applyBullet(to: &result, model: model)
         }
         return result
     }
@@ -1548,177 +1530,262 @@ final class MMDSpringPhysics {
         }
     }
 
-    // MARK: - Rigid integration
+    // MARK: - Bullet rigid bodies
 
-    private func buildRigidBodies(model: PMXModel) {
-        rigidStates.removeAll()
-        rigidStateByBody.removeAll()
-        joints.removeAll()
+    /// One PMX rigid body mapped into Bullet.
+    ///
+    /// PMX stores a body's rest transform in world space and binds it to a
+    /// bone; the solver needs the same relation expressed in the bone's local
+    /// frame, so both directions are precomputed once at load time.
+    private struct BulletBody {
+        var handle: Int32
+        var bone: Int
+        var dynamic: Bool
+        var mode: UInt8
+        var restPosition: SIMD3<Float>
+        var restRotation: simd_quatf
+        /// R_rest expressed in the bone's frame: R = B ∘ offset.
+        var offsetPosition: SIMD3<Float>
+        var offsetRotation: simd_quatf
+        /// B_rest expressed in the body's frame: B = R ∘ inverse.
+        var inversePosition: SIMD3<Float>
+        var inverseRotation: simd_quatf
+        var movable: Bool
+    }
+
+    private var bulletWorld: OpaquePointer?
+    private var bulletBodies: [BulletBody] = []
+    /// True when the model ships rigid bodies and Bullet is driving them.
+    private(set) var bulletActive = false
+
+    private func destroyBulletWorld() {
+        if let world = bulletWorld { MMDPhysWorldDestroy(world) }
+        bulletWorld = nil
+        bulletBodies.removeAll()
+        bulletActive = false
+    }
+
+    /// Builds the Bullet scene from the PMX rigid-body and joint sections.
+    ///
+    /// This is the whole reason the project carries Bullet: a PMX body is
+    /// authored against Bullet 2.x, so shape, mass, damping, restitution,
+    /// friction, collision group/mask and the 6DOF spring joints all map one
+    /// to one. Re-deriving them by hand is what produced the "skirt stretches
+    /// more every second" behaviour.
+    private func buildBulletWorld(model: PMXModel) {
+        destroyBulletWorld()
+        solvedRigidBodyCount = 0
+        solvedJointCount = 0
         rigidBoneIndices.removeAll()
 
-        for (bodyIndex, body) in model.rigidBodies.enumerated() where body.mode >= 2 && body.boneIndex >= 0 {
-            guard body.boneIndex < boneCount else { continue }
-            let restRotation = quatFromEuler(SIMD3<Float>(mmdRadians(body.rotation.x),
+        let bodies = model.rigidBodies
+        guard !bodies.isEmpty else { return }
+        guard let world = MMDPhysWorldCreate(-98.0) else { return }
+        bulletWorld = world
+
+        var records: [BulletBody] = []
+        records.reserveCapacity(bodies.count)
+        var handleForBody: [Int: Int32] = [:]
+        var slotForHandle: [Int32: Int] = [:]
+
+        for (index, body) in bodies.enumerated() {
+            let bone = (body.boneIndex >= 0 && body.boneIndex < boneCount) ? body.boneIndex : -1
+            let boneRest = bone >= 0 ? restWorldPos[bone] : .zero
+            let bodyRotation = quatFromEuler(SIMD3<Float>(mmdRadians(body.rotation.x),
                                                           mmdRadians(body.rotation.y),
                                                           mmdRadians(body.rotation.z)))
-            rigidStateByBody[bodyIndex] = rigidStates.count
-            rigidStates.append(RigidState(body: body, position: body.position,
-                                          restPosition: body.position,
-                                          rotation: restRotation,
-                                          restRotation: restRotation))
-            rigidBoneIndices.insert(body.boneIndex)
+            // Mode 0 follows its bone and exists only to be collided with;
+            // modes 1 and 2 are simulated and write back.
+            let dynamic = body.mode >= 1 && bone >= 0
+            let mass: Float = dynamic ? max(0.001, body.mass) : 0
+            // PMX group is 0...15 and the mask is a bitfield over those same
+            // groups, which is exactly Bullet's (group, mask) pair — no
+            // translation needed beyond turning the index into a bit.
+            let group = Int32(1 << min(15, Int(body.group)))
+
+            let handle = MMDPhysAddBody(world,
+                                        Int32(min(2, Int(body.shape))),
+                                        [body.size.x, body.size.y, body.size.z],
+                                        Int32(bone),
+                                        group,
+                                        Int32(body.collisionMask),
+                                        mass,
+                                        body.linearDamping,
+                                        body.angularDamping,
+                                        body.restitution,
+                                        body.friction,
+                                        [body.position.x, body.position.y, body.position.z],
+                                        [bodyRotation.imag.x, bodyRotation.imag.y,
+                                         bodyRotation.imag.z, bodyRotation.real])
+            guard handle >= 0 else { continue }
+            handleForBody[index] = handle
+            slotForHandle[handle] = records.count
+
+            // PMX bones carry translation only, so the rest pose of every bone
+            // is an identity rotation and the offset is a plain subtraction.
+            let offsetPosition = body.position - boneRest
+            let inversePosition = bodyRotation.inverse.act(boneRest - body.position)
+
+            records.append(BulletBody(handle: handle,
+                                      bone: bone,
+                                      dynamic: dynamic,
+                                      mode: body.mode,
+                                      restPosition: body.position,
+                                      restRotation: bodyRotation,
+                                      offsetPosition: offsetPosition,
+                                      offsetRotation: bodyRotation,
+                                      inversePosition: inversePosition,
+                                      inverseRotation: bodyRotation.inverse,
+                                      movable: bone >= 0 ? model.bones[bone].isMovable : false))
+            if dynamic { rigidBoneIndices.insert(bone) }
+            if dynamic { solvedRigidBodyCount += 1 }
         }
+
         for joint in model.joints {
-            guard joint.bodyA >= 0, joint.bodyB >= 0,
-                  joint.bodyA < model.rigidBodies.count,
-                  joint.bodyB < model.rigidBodies.count else { continue }
-            let a = model.rigidBodies[joint.bodyA].position
-            let b = model.rigidBodies[joint.bodyB].position
-            joints.append(JointLink(bodyA: joint.bodyA, bodyB: joint.bodyB,
-                                    offset: a - b,
-                                    springPosition: joint.springPosition,
-                                    springRotation: joint.springRotation))
-        }
-        solvedRigidBodyCount = rigidStates.count
-        solvedJointCount = joints.count
-    }
+            guard joint.bodyB >= 0, let handleB = handleForBody[joint.bodyB],
+                  let slotB = slotForHandle[handleB] else { continue }
+            let handleA = joint.bodyA >= 0 ? (handleForBody[joint.bodyA] ?? -1) : -1
 
-    private func stepRigidBodies(model: PMXModel, settings: MMDPhysicsSettings, dt: Float) {
-        let substeps = max(1, min(4, settings.substeps))
-        let subDt = dt / Float(substeps)
-        let gravity = SIMD3<Float>(0, -max(0, settings.gravity) * 9.8 * 0.9, 0)
-
-        for _ in 0..<substeps {
-            for index in rigidStates.indices {
-                var state = rigidStates[index]
-                let mass = max(0.001, state.body.mass)
-                var force = gravity * mass
-
-                // A weak pull toward the authored position keeps a badly joined
-                // body from drifting away.
-                force += (state.restPosition - state.position) * (1.6 * mass)
-
-                force -= state.velocity * state.body.linearDamping * mass * 2.4
-
-                for joint in joints {
-                    let isA = rigidStateByBody[joint.bodyA] == index
-                    let isB = rigidStateByBody[joint.bodyB] == index
-                    guard isA || isB else { continue }
-                    let otherIndex = isA ? joint.bodyB : joint.bodyA
-                    guard otherIndex >= 0, otherIndex < model.rigidBodies.count else { continue }
-                    let other = rigidStates[rigidStateByBody[otherIndex] ?? index]
-                    let anchor = other.position + (isA ? joint.offset : -joint.offset)
-                    // PMX spring values are 0...∞; 0 means "rigid". Map them so
-                    // a fully rigid joint is strong and a soft one still holds.
-                    let springSum = abs(joint.springPosition.x) + abs(joint.springPosition.y)
-                        + abs(joint.springPosition.z)
-                    let strength = 90 / (1 + springSum * 4)
-                    force += (anchor - state.position) * strength * mass
-                }
-
-                state.velocity += force / mass * subDt
-                let speed = simd_length(state.velocity)
-                if speed > 6 { state.velocity *= 6 / speed }
-                state.position += state.velocity * subDt
-
-                // Positional joint projection: keeps links from stretching
-                // without relying on a stiff force.
-                for joint in joints {
-                    let isA = rigidStateByBody[joint.bodyA] == index
-                    let isB = rigidStateByBody[joint.bodyB] == index
-                    guard isA || isB else { continue }
-                    let otherIndex = isA ? joint.bodyB : joint.bodyA
-                    guard otherIndex >= 0, otherIndex < model.rigidBodies.count,
-                          let otherSlot = rigidStateByBody[otherIndex] else { continue }
-                    let other = rigidStates[otherSlot]
-                    let anchor = other.position + (isA ? joint.offset : -joint.offset)
-                    let delta = state.position - anchor
-                    let distance = simd_length(delta)
-                    let maxDeviation = max(0.02, modelHeight * 0.02)
-                    if distance > maxDeviation {
-                        state.position = anchor + delta / distance * maxDeviation
-                    }
-                }
-
-                let angularSpeed = simd_length(state.angularVelocity)
-                if angularSpeed > 0.0001 {
-                    let step = min(0.35, angularSpeed * subDt)
-                    state.rotation = simd_quatf(angle: step,
-                                                axis: state.angularVelocity / angularSpeed) * state.rotation
-                }
-                let angularDamping = max(0.0, min(1.0, state.body.angularDamping))
-                state.angularVelocity *= max(0, 1 - angularDamping * subDt * 60 * 0.35)
-                state.velocity *= max(0, 1 - state.body.linearDamping * subDt * 60 * 0.20)
-
-                if settings.collision {
-                    let radius = max(state.body.size.x, max(state.body.size.y, state.body.size.z))
-                    if state.position.y - radius < floorY {
-                        state.position.y = floorY + radius
-                        if state.velocity.y < 0 {
-                            state.velocity.y = -state.velocity.y * max(0, min(0.9, state.body.restitution))
-                        }
-                    }
-                }
-                rigidStates[index] = state
+            let jointRotation = quatFromEuler(SIMD3<Float>(mmdRadians(joint.rotation.x),
+                                                           mmdRadians(joint.rotation.y),
+                                                           mmdRadians(joint.rotation.z)))
+            let bodyB = bodies[joint.bodyB]
+            let frameB = Self.localFrame(position: joint.position,
+                                         rotation: jointRotation,
+                                         bodyPosition: bodyB.position,
+                                         bodyRotation: records[slotB].restRotation)
+            var frameA: (SIMD3<Float>, simd_quatf) = (.zero, mmdIdentityQuaternion)
+            if handleA >= 0, let slotA = slotForHandle[handleA], joint.bodyA < bodies.count {
+                frameA = Self.localFrame(position: joint.position,
+                                         rotation: jointRotation,
+                                         bodyPosition: bodies[joint.bodyA].position,
+                                         bodyRotation: records[slotA].restRotation)
             }
 
-            if settings.collision {
-                for i in rigidStates.indices {
-                    for j in (i + 1)..<rigidStates.count {
-                        let a = rigidStates[i]
-                        let b = rigidStates[j]
-                        if a.body.group == b.body.group { continue }
-                        let maskForB = UInt16(1) << UInt16(min(15, b.body.group))
-                        let maskForA = UInt16(1) << UInt16(min(15, a.body.group))
-                        if (a.body.collisionMask & maskForB) == 0 { continue }
-                        if (b.body.collisionMask & maskForA) == 0 { continue }
-                        let ra = max(a.body.size.x, max(a.body.size.y, a.body.size.z))
-                        let rb = max(b.body.size.x, max(b.body.size.y, b.body.size.z))
-                        let delta = b.position - a.position
-                        let distance = simd_length(delta)
-                        let minimum = ra + rb
-                        guard distance < minimum, distance > 0.0001 else { continue }
-                        let normal = delta / distance
-                        let penetration = minimum - distance
-                        rigidStates[i].position -= normal * penetration * 0.5
-                        rigidStates[j].position += normal * penetration * 0.5
-                        let relative = simd_dot(rigidStates[j].velocity - rigidStates[i].velocity, normal)
-                        if relative < 0 {
-                            let impulse = normal * (-relative * 0.5)
-                            rigidStates[i].velocity -= impulse
-                            rigidStates[j].velocity += impulse
-                        }
-                    }
+            // A PMX joint whose bounds are all zero means "no limit"; Bullet
+            // would otherwise lock that axis at zero travel.
+            let travel = Self.jointBounds(joint.limitLower, joint.limitUpper,
+                                          unlimited: modelHeight)
+            let swing = Self.jointBounds(joint.limitLowerAngle, joint.limitUpperAngle,
+                                         unlimited: .pi)
+
+            _ = MMDPhysAdd6DofJoint(world, handleA, handleB,
+                                    frameA.0.f3, frameA.1.f4,
+                                    frameB.0.f3, frameB.1.f4,
+                                    travel.0.f3, travel.1.f3,
+                                    swing.0.f3, swing.1.f3,
+                                    joint.springPosition.f3, joint.springRotation.f3)
+            solvedJointCount += 1
+        }
+
+        bulletBodies = records
+        // A model whose bodies are all mode 0 has nothing to simulate; the
+        // colliders stay in the world for the chain solver to reuse, but the
+        // "rigid body" switch must fall back rather than look broken.
+        bulletActive = records.contains(where: { $0.dynamic })
+        totalRigidBodyCount = records.count
+    }
+
+    private static func localFrame(position: SIMD3<Float>, rotation: simd_quatf,
+                                   bodyPosition: SIMD3<Float>, bodyRotation: simd_quatf)
+        -> (SIMD3<Float>, simd_quatf) {
+        (bodyRotation.inverse.act(position - bodyPosition),
+         quatNormalize(bodyRotation.inverse * rotation))
+    }
+
+    private static func jointBounds(_ lower: SIMD3<Float>, _ upper: SIMD3<Float>,
+                                    unlimited: Float) -> (SIMD3<Float>, SIMD3<Float>) {
+        if lower == .zero && upper == .zero {
+            return (SIMD3<Float>(repeating: -unlimited), SIMD3<Float>(repeating: unlimited))
+        }
+        // Guard against a malformed file with lower > upper, which Bullet
+        // treats as a fully locked joint.
+        return (simd_min(lower, upper), simd_max(lower, upper))
+    }
+
+    private func stepBullet(dt: Float) {
+        guard let world = bulletWorld else { return }
+        guard dt > 0.00001 else { return }
+
+        // Kinematic bodies are placed on their bone before the solve; Bullet
+        // derives their velocity from the delta, which is what lets a moving
+        // thigh sweep a skirt panel out of the way.
+        for record in bulletBodies where !record.dynamic && record.bone >= 0 {
+            let bone = record.bone
+            let boneQuat = solvedQuat[bone]
+            let position = worldPos[bone] + boneQuat.act(record.offsetPosition)
+            let rotation = quatNormalize(boneQuat * record.offsetRotation)
+            MMDPhysSetBodyTransform(world, record.handle, position.f3, rotation.f4)
+        }
+
+        // 120 Hz fixed step, at most four catch-up steps. A 4K export frame
+        // that took 60 ms must not be handed to Bullet as a single 60 ms step.
+        MMDPhysWorldStep(world, min(dt, 0.1), 4, 1.0 / 120.0)
+    }
+
+    private func applyBullet(to animations: inout [Int: MMDBoneAnimation], model: PMXModel) {
+        guard let world = bulletWorld else { return }
+        // Topological order: a child body's bone transform has to be derived
+        // from its parent's *already updated* world rotation, otherwise two
+        // simulated bodies in a chain read a stale parent and shear apart.
+        let ordered = bulletBodies.enumerated()
+            .filter { $0.element.dynamic }
+            .sorted { depth(of: $0.element.bone) < depth(of: $1.element.bone) }
+
+        for (_, record) in ordered {
+            let bone = record.bone
+            guard bone >= 0 && bone < boneCount else { continue }
+
+            var position = [Float](repeating: 0, count: 3)
+            var rotation = [Float](repeating: 0, count: 4)
+            position.withUnsafeMutableBufferPointer { p in
+                rotation.withUnsafeMutableBufferPointer { r in
+                    MMDPhysGetBodyTransform(world, record.handle, p.baseAddress, r.baseAddress)
                 }
             }
+            let bodyQuat = simd_quatf(ix: rotation[0], iy: rotation[1],
+                                      iz: rotation[2], r: rotation[3])
+            guard bodyQuat.real.isFinite, simd_length(bodyQuat.imag).isFinite else { continue }
+            let bodyPos = SIMD3<Float>(position[0], position[1], position[2])
+            guard bodyPos.x.isFinite, bodyPos.y.isFinite, bodyPos.z.isFinite else { continue }
+
+            let bonePos = bodyPos + bodyQuat.act(record.inversePosition)
+            let boneQuat = quatNormalize(bodyQuat * record.inverseRotation)
+            let parent = parentIndices[bone]
+            let parentQuat = parent >= 0 ? solvedQuat[parent] : mmdIdentityQuaternion
+
+            var animation = animations[bone] ?? MMDBoneAnimation()
+            animation.rotation = quatNormalize(parentQuat.inverse * boneQuat)
+
+            // Mode 2 is "physics + bone position alignment": the body may also
+            // drag the bone along, which is how a long skirt keeps its hem on
+            // the authored shape. Bound it so a solver hiccup cannot pull a
+            // bone out of the model.
+            if record.mode >= 2 && record.movable {
+                let parentPos = parent >= 0 ? worldPos[parent] : .zero
+                var local = parentQuat.inverse.act(bonePos - parentPos)
+                local -= restLocal[bone]
+                let limit = max(0.05, modelHeight * 0.02)
+                let distance = simd_length(local)
+                if distance > limit { local *= limit / distance }
+                animation.position = local
+            }
+
+            animations[bone] = animation
+            solvedQuat[bone] = boneQuat
+            worldPos[bone] = bonePos
         }
     }
 
-    private func applyRigidBodies(to animations: inout [Int: MMDBoneAnimation], model: PMXModel,
-                                  settings: MMDPhysicsSettings) {
-        var applied: Set<Int> = []
-        let limit = max(0.05, min(0.35, settings.maxAngle / 120))
-        for state in rigidStates {
-            let boneIndex = state.body.boneIndex
-            guard boneIndex >= 0 && boneIndex < boneCount,
-                  !Self.isHumanoidDeformBone(model.bones[boneIndex]),
-                  !ikBones.contains(boneIndex),
-                  applied.insert(boneIndex).inserted else { continue }
-
-            var deltaPosition = state.position - state.restPosition
-            let length = simd_length(deltaPosition)
-            if length > limit { deltaPosition *= limit / length }
-
-            let parent = parentIndices[boneIndex]
-            let parentQuat = parent >= 0 ? poseQuat[parent] : mmdIdentityQuaternion
-            var animation = animations[boneIndex] ?? MMDBoneAnimation()
-            animation.position += parentQuat.inverse.act(deltaPosition)
-
-            let deltaRotation = state.rotation * state.restRotation.inverse
-            let local = parentQuat.inverse * deltaRotation * parentQuat
-            animation.rotation = quatNormalize(animation.rotation * local)
-            animations[boneIndex] = animation
+    private func depth(of bone: Int) -> Int {
+        guard bone >= 0 && bone < parentIndices.count else { return 0 }
+        var level = 0
+        var cursor = bone
+        while cursor >= 0 && level < 256 {
+            cursor = parentIndices[cursor]
+            level += 1
         }
+        return level
     }
 
     /// MMD rigid bodies are normally authored for skirts, hair and props.
@@ -1735,4 +1802,13 @@ final class MMDSpringPhysics {
 /// sane range so a malformed PMX cannot make one iteration jump 180 degrees.
 func class_half_clamp(_ value: Float) -> Float {
     max(0.02, min(1.0, value))
+}
+
+/// Small bridges to the C surface, which takes plain float arrays.
+extension SIMD3 where Scalar == Float {
+    var f3: [Float] { [x, y, z] }
+}
+
+extension simd_quatf {
+    var f4: [Float] { [imag.x, imag.y, imag.z, real] }
 }

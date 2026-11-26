@@ -22,6 +22,7 @@
 		AA0000000000000000000020 /* PMXParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA000000000000000000001F /* PMXParser.swift */; };
 		AA0000000000000000000022 /* VMDParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000021 /* VMDParser.swift */; };
 		AA0000000000000000000024 /* MMDAnimation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000023 /* MMDAnimation.swift */; };
+		AA00000000000000000000B2 /* MMDBulletBridge.mm in Sources */ = {isa = PBXBuildFile; fileRef = AA00000000000000000000B1 /* MMDBulletBridge.mm */; };
 		AA0000000000000000000026 /* MMDTextureLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000025 /* MMDTextureLoader.swift */; };
 		AA0000000000000000000028 /* MMDMeshBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000027 /* MMDMeshBuilder.swift */; };
 		AA000000000000000000002A /* MMDRenderTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000029 /* MMDRenderTypes.swift */; };
@@ -60,6 +61,7 @@
 		AA000000000000000000001F /* PMXParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PMXParser.swift; sourceTree = "<group>"; };
 		AA0000000000000000000021 /* VMDParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VMDParser.swift; sourceTree = "<group>"; };
 		AA0000000000000000000023 /* MMDAnimation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDAnimation.swift; sourceTree = "<group>"; };
+		AA00000000000000000000B1 /* MMDBulletBridge.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = MMDBulletBridge.mm; sourceTree = "<group>"; };
 		AA0000000000000000000025 /* MMDTextureLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDTextureLoader.swift; sourceTree = "<group>"; };
 		AA0000000000000000000027 /* MMDMeshBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDMeshBuilder.swift; sourceTree = "<group>"; };
 		AA0000000000000000000029 /* MMDRenderTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MMDRenderTypes.swift; sourceTree = "<group>"; };
@@ -133,6 +135,7 @@
 				AA000000000000000000001F /* PMXParser.swift */,
 				AA0000000000000000000021 /* VMDParser.swift */,
 				AA0000000000000000000023 /* MMDAnimation.swift */,
+				AA00000000000000000000B1 /* MMDBulletBridge.mm */,
 				AA0000000000000000000067 /* PMDParser.swift */,
 				AA0000000000000000000069 /* MMDPoseParser.swift */,
 				AA000000000000000000006B /* MMDModelExport.swift */,
@@ -259,6 +262,7 @@
 				AA0000000000000000000020 /* PMXParser.swift in Sources */,
 				AA0000000000000000000022 /* VMDParser.swift in Sources */,
 				AA0000000000000000000024 /* MMDAnimation.swift in Sources */,
+				AA00000000000000000000B2 /* MMDBulletBridge.mm in Sources */,
 				AA0000000000000000000026 /* MMDTextureLoader.swift in Sources */,
 				AA0000000000000000000028 /* MMDMeshBuilder.swift in Sources */,
 				AA000000000000000000002A /* MMDRenderTypes.swift in Sources */,
@@ -294,6 +298,19 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/ThirdParty/bullet/src",
+					"$(inherited)",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/build/bullet",
+					"$(inherited)",
+				);
+				OTHER_LDFLAGS = (
+					"-lbullet",
+					"-lc++",
+					"$(inherited)",
+				);
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_WARN_BOOL_CONVERSION = YES;
@@ -337,6 +354,19 @@
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				HEADER_SEARCH_PATHS = (
+					"$(SRCROOT)/ThirdParty/bullet/src",
+					"$(inherited)",
+				);
+				LIBRARY_SEARCH_PATHS = (
+					"$(SRCROOT)/build/bullet",
+					"$(inherited)",
+				);
+				OTHER_LDFLAGS = (
+					"-lbullet",
+					"-lc++",
+					"$(inherited)",
+				);
 				CLANG_ENABLE_MODULES = YES;
 				CLANG_ENABLE_OBJC_ARC = YES;
 				CLANG_WARN_BOOL_CONVERSION = YES;
@@ -374,7 +404,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 20;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MMDStudio/Info.plist;
@@ -383,7 +413,7 @@
 				    "$(inherited)",
 				    "@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mmdstudio.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -402,7 +432,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 19;
+				CURRENT_PROJECT_VERSION = 20;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = MMDStudio/Info.plist;
@@ -411,7 +441,7 @@
 				    "$(inherited)",
 				    "@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.9;
+				MARKETING_VERSION = 2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.mmdstudio.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";

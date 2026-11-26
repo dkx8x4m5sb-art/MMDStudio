@@ -724,15 +724,38 @@ final class PMXParser {
             position.z = -position.z
             var rotation = try reader.readVector3("关节旋转")
             rotation.x = -rotation.x; rotation.y = -rotation.y
-            _ = try reader.readVector3("关节移动下限")
-            _ = try reader.readVector3("关节移动上限")
-            _ = try reader.readVector3("关节旋转下限")
-            _ = try reader.readVector3("关节旋转上限")
+            var limitLower = try reader.readVector3("关节移动下限")
+            var limitUpper = try reader.readVector3("关节移动上限")
+            var limitLowerAngle = try reader.readVector3("关节旋转下限")
+            var limitUpperAngle = try reader.readVector3("关节旋转上限")
+
+            // Same handedness fix as the joint frame above: a z mirror flips
+            // the translation bound on z and reverses the sign of the x/y
+            // swing bounds, so lower and upper have to swap on those axes or
+            // the constraint ends up inverted and locks the joint.
+            let lowerZ = -limitUpper.z
+            let upperZ = -limitLower.z
+            limitLower.z = lowerZ
+            limitUpper.z = upperZ
+
+            let lowerX = -limitUpperAngle.x
+            let upperX = -limitLowerAngle.x
+            limitLowerAngle.x = lowerX
+            limitUpperAngle.x = upperX
+
+            let lowerY = -limitUpperAngle.y
+            let upperY = -limitLowerAngle.y
+            limitLowerAngle.y = lowerY
+            limitUpperAngle.y = upperY
             let springPosition = try reader.readVector3("关节位移弹簧")
             let springRotation = try reader.readVector3("关节旋转弹簧")
             result.append(PMXJoint(name: name, nameEn: nameEn, type: type,
                                    bodyA: bodyA, bodyB: bodyB, position: position,
-                                   rotation: rotation, springPosition: springPosition,
+                                   rotation: rotation,
+                                   limitLower: limitLower, limitUpper: limitUpper,
+                                   limitLowerAngle: limitLowerAngle,
+                                   limitUpperAngle: limitUpperAngle,
+                                   springPosition: springPosition,
                                    springRotation: springRotation))
         }
         return result

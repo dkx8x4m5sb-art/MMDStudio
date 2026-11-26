@@ -119,6 +119,13 @@ struct PMXJoint {
     var bodyB: Int
     var position: SIMD3<Float>
     var rotation: SIMD3<Float>
+    /// Travel and swing bounds, radians for the angular pair. Bullet's 6DOF
+    /// constraint needs both or the joint is a free hinge and the chain falls
+    /// apart; the parser used to read these four vectors and throw them away.
+    var limitLower: SIMD3<Float> = SIMD3<Float>(-1000, -1000, -1000)
+    var limitUpper: SIMD3<Float> = SIMD3<Float>(1000, 1000, 1000)
+    var limitLowerAngle: SIMD3<Float> = SIMD3<Float>(-3.14159265, -3.14159265, -3.14159265)
+    var limitUpperAngle: SIMD3<Float> = SIMD3<Float>(3.14159265, 3.14159265, 3.14159265)
     var springPosition: SIMD3<Float>
     var springRotation: SIMD3<Float>
 }

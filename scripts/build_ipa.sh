@@ -49,6 +49,15 @@ echo ""
 mkdir -p "$BUILD_DIR"
 rm -rf "$ARCHIVE_PATH" "$DERIVED_DATA" "$STAGE_DIR"
 
+# Bullet 必须先编成静态库，xcodebuild 才不会在链接阶段找不到 -lbullet。
+BULLET_LIB="$BUILD_DIR/bullet/libbullet.a"
+if [ ! -f "$BULLET_LIB" ] || [ "${FORCE_BULLET:-0}" = "1" ]; then
+  echo "编译 Bullet ..."
+  OUT_DIR="$BUILD_DIR/bullet" "$ROOT/scripts/build_bullet.sh"
+else
+  echo "复用已有的 $BULLET_LIB"
+fi
+
 set +e
 xcodebuild \
   -project "$PROJECT_PATH" \
