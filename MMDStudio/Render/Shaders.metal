@@ -325,8 +325,10 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
 
         // Shadow keeps the albedo hue instead of turning grey: multiply by a
         // tinted factor, then lift the floor so cloth does not crush.
+        // `mix(0.42, 0.80, lift)` kept the shadow at ~95% of the albedo at the
+        // default lift, which read as a grey wash instead of a cel shadow.
         float3 shadowColor = base.rgb * mix(float3(1.0), shadowTint, tintStrength)
-                           * mix(0.42, 0.80, lift);
+                           * (0.35 + 0.60 * lift);
         float3 litColor = base.rgb * (0.97 + 0.06 * ramp);
         // Shadow term is tinted by the key light so a warm sun and a cold fill
         // produce different shadow temperatures.
