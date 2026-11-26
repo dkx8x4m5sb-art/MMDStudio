@@ -502,7 +502,17 @@ struct ModelViewerView: View {
         defer { if accessed { url.stopAccessingSecurityScopedResource() } }
         do {
             let job = try document.scanMotion(url: url)
-            guard let best = job.best else { throw MMDModelDocument.noPlayableMotion(in: job) }
+            guard let best = job.best else {
+                // A camera VMD is a legitimate import: it drives the view, not
+                // the model. Say that out loud instead of failing silently.
+                if !job.cameraOnlyFiles.isEmpty {
+                    motionImport = nil
+                    let keys = try document.loadCameraMotion(from: job)
+                    showToast("这是镜头文件：已启用 VMD 相机（\(keys) 个关键帧），模型本身不会动")
+                    return
+                }
+                throw MMDModelDocument.noPlayableMotion(in: job)
+            }
             if job.needsChoice {
                 motionImport = job
                 motionChoice = best.id
@@ -912,7 +922,7 @@ private struct MotionCandidatePicker: View {
                         ForEach(job.skippedCameraOnly, id: \.self) { name in
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(name).font(.caption.monospaced()).lineLimit(1)
-                                Text("只有相机关键帧，导入后模型不会动")
+                                Text("只有相机关键帧；单独导入会作为镜头运动启用 VMD 相机")
                                     .font(.caption2)
                                     .foregroundStyle(.secondary)
                             }

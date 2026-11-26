@@ -254,7 +254,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         }
 
         var candidates = [MMDMotionCandidate]()
-        var cameraOnly = [String]()
+        var cameraOnly = [URL]()
         var unreadable = [String]()
         for file in vmdFiles.prefix(32) {
             let parsed: VMDMotion
@@ -280,7 +280,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
             if candidate.isPlayable {
                 candidates.append(candidate)
             } else {
-                cameraOnly.append(file.lastPathComponent)
+                cameraOnly.append(file)
             }
         }
 
@@ -293,7 +293,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         }
 
         if !cameraOnly.isEmpty {
-            MMDLog.shared.info("Skipped camera-only VMD: \(cameraOnly.joined(separator: ", "))", category: "Motion")
+            let names = cameraOnly.map { $0.lastPathComponent }.joined(separator: ", ")
+            MMDLog.shared.info("Camera-only VMD set aside: \(names)", category: "Motion")
         }
         MMDLog.shared.info("Motion scan: \(vmdFiles.count) vmd, \(candidates.count) playable, " +
                            "best=\(candidates.first?.fileName ?? "none") " +
@@ -303,8 +304,24 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         return MMDMotionImport(folder: folder,
                                candidates: candidates,
                                audioFiles: audioFiles,
-                               skippedCameraOnly: cameraOnly,
+                               cameraOnlyFiles: cameraOnly,
                                unreadable: unreadable)
+    }
+
+    /// Install a clip that holds only camera keys. The model stays in its rest
+    /// pose and the authored framing drives the view; this is the honest
+    /// version of what the old importer silently did with these files.
+    @discardableResult
+    func loadCameraMotion(from job: MMDMotionImport) throws -> Int {
+        guard let url = job.cameraOnlyFiles.first else { throw Self.noPlayableMotion(in: job) }
+        let loaded = try VMDParser(data: try Data(contentsOf: url)).parse()
+        guard !loaded.cameraKeys.isEmpty else { throw Self.noPlayableMotion(in: job) }
+        let name = loaded.name.isEmpty ? url.deletingPathExtension().lastPathComponent : loaded.name
+        _ = try installMotion(loaded, name: name)
+        useCameraMotion = true
+        MMDLog.shared.info("Camera-only motion loaded: \(url.lastPathComponent), " +
+                           "keys=\(loaded.cameraKeys.count), frames=\(loaded.maxFrame)", category: "Motion")
+        return loaded.cameraKeys.count
     }
 
     /// Load without asking: used by generated motions and by any caller that
@@ -344,10 +361,10 @@ final class MMDModelDocument: ObservableObject, Identifiable {
 
     /// Human-readable reason an archive produced no playable clip.
     static func noPlayableMotion(in job: MMDMotionImport) -> MMDLoadError {
-        if !job.skippedCameraOnly.isEmpty && job.unreadable.isEmpty {
+        if !job.cameraOnlyFiles.isEmpty && job.unreadable.isEmpty {
             let names = job.skippedCameraOnly.prefix(4).joined(separator: "、")
-            return .invalidData("压缩包里的 \(job.skippedCameraOnly.count) 个 VMD 都只有镜头数据，没有骨骼动作：" +
-                                "\(names)。它们只控制相机，导入后模型不会动——请选择文件名带 Motion 的那个 VMD。")
+            return .invalidData("压缩包里的 \(job.cameraOnlyFiles.count) 个 VMD 都只有镜头数据，没有骨骼动作：" +
+                                "\(names)。它们只控制相机，模型不会动——请选择文件名带 Motion 的那个 VMD。")
         }
         if !job.unreadable.isEmpty {
             let names = job.unreadable.prefix(4).joined(separator: "、")

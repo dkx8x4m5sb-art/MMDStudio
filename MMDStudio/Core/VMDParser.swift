@@ -454,9 +454,11 @@ struct MMDMotionImport {
     let candidates: [MMDMotionCandidate]
     let audioFiles: [URL]
     /// Files inside the zip that carried camera keys but no bone motion.
-    let skippedCameraOnly: [String]
+    /// They are still useful: a camera VMD is how the author framed the shot.
+    let cameraOnlyFiles: [URL]
     let unreadable: [String]
 
+    var skippedCameraOnly: [String] { cameraOnlyFiles.map { $0.lastPathComponent } }
     var best: MMDMotionCandidate? { candidates.first }
 
     /// Two clips that both bind to this model: the user has to pick which cut
