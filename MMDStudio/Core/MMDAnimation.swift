@@ -1434,7 +1434,7 @@ final class MMDSpringPhysics {
                 // direction (v12.7) pinned the whole chain onto one cone and
                 // made it project out of the body like a board.
                 dir = clampDir(dir, to: previousDir, maxAngle: link.bend + linkLimit)
-                dir = clampDir(dir, to: silhouette, maxAngle: link.chainLimit * swingScale)
+                dir = clampDir(dir, to: silhouette, maxAngle: link.limitChain * swingScale)
 
                 if link.collides {
                     let tail = head + dir * link.length
@@ -1445,7 +1445,7 @@ final class MMDSpringPhysics {
                         corrected = clampDir(corrected, to: previousDir,
                                              maxAngle: link.bend + linkLimit)
                         corrected = clampDir(corrected, to: silhouette,
-                                             maxAngle: link.chainLimit * swingScale)
+                                             maxAngle: link.limitChain * swingScale)
                         dir = corrected
                     }
                 }
