@@ -831,15 +831,28 @@ final class MMDSpringPhysics {
         }
         // Some rigs only name the chain root ("skirt_master") and leave the
         // child bones generic. Include a bone when one of its ancestors is a
-        // known secondary root.
-        for index in 0..<boneCount where !secondary.contains(index) {
-            guard !ikBones.contains(index), !Self.isHumanoidDeformBone(model.bones[index]) else { continue }
-            var cursor = parentIndices[index]
-            var guardCount = 0
-            while cursor >= 0 && guardCount < 8 {
-                if secondary.contains(cursor) { secondary.insert(index); break }
-                cursor = parentIndices[cursor]
-                guardCount += 1
+        // known secondary root. Repeated until nothing changes: a single pass
+        // misses a generic bone whose parent is listed *after* it, which
+        // silently truncated the chain to its first link.
+        var added = true
+        var rounds = 0
+        while added && rounds < 4 {
+            added = false
+            rounds += 1
+            for index in 0..<boneCount where !secondary.contains(index) {
+                guard !ikBones.contains(index),
+                      !Self.isHumanoidDeformBone(model.bones[index]) else { continue }
+                var cursor = parentIndices[index]
+                var guardCount = 0
+                while cursor >= 0 && guardCount < 8 {
+                    if secondary.contains(cursor) {
+                        secondary.insert(index)
+                        added = true
+                        break
+                    }
+                    cursor = parentIndices[cursor]
+                    guardCount += 1
+                }
             }
         }
         guard !secondary.isEmpty else {
