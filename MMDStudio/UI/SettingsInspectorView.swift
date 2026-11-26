@@ -131,7 +131,9 @@ struct SettingsInspectorView: View {
                     }
                     Toggle("VMD / PMX IK 求解", isOn: $document.ikEnabled)
                     if document.ikEnabled {
-                        let chains = document.model.bones.reduce(0) { $0 + ($1.ik != nil ? 1 : 0) }
+                        let chains = document.model.bones.reduce(0) { total, bone in
+                            total + ((bone.ik?.links.isEmpty == false) ? 1 : 0)
+                        }
                         if chains == 0 {
                             Text("该模型没有 IK 骨（多数游戏提取模型都是纯 FK），此开关不会有任何效果。")
                                 .font(.caption).foregroundStyle(.orange)

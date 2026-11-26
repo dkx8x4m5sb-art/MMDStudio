@@ -364,6 +364,7 @@ final class MMDVideoExporter: ObservableObject {
                     _ = adaptor.append(clear, withPresentationTime: .zero)
                 }
 
+                var zeroCopyEnabled = true
                 for frame in 0..<frameCount {
                     if self.cancelled { break }
                     let frameTime = Float(frame) / Float(max(1, fps)) * document.frameRate
@@ -374,13 +375,28 @@ final class MMDVideoExporter: ObservableObject {
                     // Fast path: the GPU draws straight into a buffer owned by
                     // the encoder. At 4K the old path moved 66 MB per frame
                     // through the CPU and could not hold 60 fps.
-                    if let pool = adaptor.pixelBufferPool {
+                    if zeroCopyEnabled, let pool = adaptor.pixelBufferPool {
                         var pooled: CVPixelBuffer?
                         CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pooled)
                         if let pooled, let texture = renderer.makeCaptureTexture(for: pooled),
                            renderer.captureFrame(into: texture, frame: frameTime,
                                                  transparentBackground: transparentBackground) {
-                            buffer = pooled
+                            if frame == 0 {
+                                // Verify the IOSurface path actually produced
+                                // pixels; an all-clear first frame means the
+                                // texture binding silently failed and the whole
+                                // video would come out empty.
+                                let coverage = Self.pixelBufferCoverage(pooled)
+                                if coverage > 0.001 || !transparentBackground {
+                                    buffer = pooled
+                                } else {
+                                    zeroCopyEnabled = false
+                                    MMDLog.shared.error("Zero-copy capture produced an empty frame (coverage \(String(format: "%.3f", coverage))); falling back to readback",
+                                                        category: "Export")
+                                }
+                            } else {
+                                buffer = pooled
+                            }
                         }
                     }
 
@@ -554,6 +570,32 @@ final class MMDVideoExporter: ObservableObject {
         }
         CVPixelBufferUnlockBaseAddress(pixelBuffer, [])
         return pixelBuffer
+    }
+
+    /// Fraction of sampled pixels whose alpha is above a small threshold.
+    /// Used once per export to confirm the zero-copy path drew something.
+    private static func pixelBufferCoverage(_ buffer: CVPixelBuffer) -> Double {
+        CVPixelBufferLockBaseAddress(buffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(buffer) else { return 0 }
+        let rowBytes = CVPixelBufferGetBytesPerRow(buffer)
+        let height = CVPixelBufferGetHeight(buffer)
+        let width = CVPixelBufferGetWidth(buffer)
+        let pointer = base.assumingMemoryBound(to: UInt8.self)
+        var covered = 0
+        var total = 0
+        var y = 0
+        while y < height {
+            let row = pointer + y * rowBytes
+            var x = 0
+            while x < width {
+                if row[x * 4 + 3] > 8 { covered += 1 }
+                total += 1
+                x += 4
+            }
+            y += 4
+        }
+        return total > 0 ? Double(covered) / Double(total) : 0
     }
 
     private static func writeFrameProbe(_ bytes: [UInt8], rowBytes: Int,
