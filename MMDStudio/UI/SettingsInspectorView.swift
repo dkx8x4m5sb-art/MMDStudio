@@ -255,14 +255,26 @@ struct SettingsInspectorView: View {
                     if document.hasMotion {
                         LabeledContent("名称", value: document.motionName)
                         LabeledContent("总帧数", value: "\(document.motion?.maxFrame ?? 0)")
-                        LabeledContent("相机关键帧", value: "\(document.motion?.cameraKeys.count ?? 0)")
+                        LabeledContent("镜头关键帧", value: "\(document.activeCameraKeys.count)")
+                        if !document.cameraMotionName.isEmpty {
+                            LabeledContent("镜头来源", value: document.cameraMotionName)
+                        }
                         Toggle("使用 VMD 相机动作", isOn: $document.useCameraMotion)
-                            .disabled(document.motion?.cameraKeys.isEmpty ?? true)
+                            .disabled(!document.hasCameraMotion)
                         Button("移除动作", role: .destructive) {
                             document.removeMotion()
                         }
                     } else {
-                        Text("尚未加载动作。点播放栏的「选择动作」打开动作库。")
+                        if document.hasCameraMotion {
+                            Toggle("使用 VMD 相机动作", isOn: $document.useCameraMotion)
+                            Text("尚未加载动作，只用镜头。点播放栏的「选择动作」打开动作库。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("尚未加载动作。点播放栏的「选择动作」打开动作库。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

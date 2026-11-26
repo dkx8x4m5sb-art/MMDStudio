@@ -482,8 +482,8 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         let eye: SIMD3<Float>
         let target: SIMD3<Float>
         let fovDegrees: Float
-        if document.useCameraMotion, let motion = document.motion, !motion.cameraKeys.isEmpty,
-           let cameraPose = VMDMotion.evaluateCamera(keys: motion.cameraKeys,
+        if document.useCameraMotion, !document.activeCameraKeys.isEmpty,
+           let cameraPose = VMDMotion.evaluateCamera(keys: document.activeCameraKeys,
                                                      frame: document.renderFrame) {
             eye = cameraPose.eye
             target = cameraPose.target
@@ -1579,8 +1579,8 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         let target: SIMD3<Float>
         let fovDegrees: Float
 
-        if document.useCameraMotion, let motion = document.motion, !motion.cameraKeys.isEmpty,
-           let pose = VMDMotion.evaluateCamera(keys: motion.cameraKeys, frame: renderFrame) {
+        if document.useCameraMotion, !document.activeCameraKeys.isEmpty,
+           let pose = VMDMotion.evaluateCamera(keys: document.activeCameraKeys, frame: renderFrame) {
             eye = pose.eye
             target = pose.target
             fovDegrees = pose.fovDegrees

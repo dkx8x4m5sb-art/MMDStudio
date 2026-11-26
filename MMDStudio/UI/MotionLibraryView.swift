@@ -89,7 +89,8 @@ struct MotionLibraryPicker: View {
                     }
                     ForEach(library.cameras) { asset in
                         Button { load(asset) } label: {
-                            MotionAssetRow(asset: asset, isCurrent: document.useCameraMotion && isCurrent(asset))
+                            MotionAssetRow(asset: asset,
+                                           isCurrent: document.cameraMotionName == asset.title)
                         }
                         .buttonStyle(.plain)
                     }
@@ -145,11 +146,15 @@ struct MotionLibraryPicker: View {
 
     private func load(_ asset: MMDMotionAsset) {
         do {
-            let mapped = try document.loadMotion(asset: asset, from: library)
-            let note = asset.kind == .camera
-                ? "已启用镜头《\(asset.title)》：相机运动，模型本身不动"
-                : "已加载《\(asset.title)》：\(mapped) 根骨骼"
-            NotificationCenter.default.post(name: .mmdMotionLoaded, object: note)
+            if asset.kind == .camera {
+                let keys = try document.loadMotion(asset: asset, from: library)
+                NotificationCenter.default.post(name: .mmdMotionLoaded,
+                                                object: "已启用镜头《\(asset.title)》：\(keys) 个相机关键帧")
+            } else {
+                let mapped = try document.loadMotion(asset: asset, from: library)
+                NotificationCenter.default.post(name: .mmdMotionLoaded,
+                                                object: "已加载《\(asset.title)》：\(mapped) 根骨骼")
+            }
             dismiss()
         } catch {
             errorText = error.localizedDescription

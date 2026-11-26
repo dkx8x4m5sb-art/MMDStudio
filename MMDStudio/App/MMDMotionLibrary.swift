@@ -187,14 +187,9 @@ final class MMDMotionLibrary: ObservableObject {
                     try fileManager.copyItem(at: file, to: target)
                 }
                 var audioRelative: String?
-                if let audio = Self.matchingAudio(for: file, in: audioFiles) {
-                    let audioTarget = folder.appendingPathComponent(audio.lastPathComponent)
-                    if !fileManager.fileExists(atPath: audioTarget.path) {
-                        try? fileManager.copyItem(at: audio, to: audioTarget)
-                    }
-                    if fileManager.fileExists(atPath: audioTarget.path) {
-                        audioRelative = "\(hash)/\(audio.lastPathComponent)"
-                    }
+                if let audio = Self.matchingAudio(for: file, in: audioFiles),
+                   let audioURL = storeAudio(audio) {
+                    audioRelative = relativePath(of: audioURL)
                 }
                 let asset = MMDMotionAsset(id: hash,
                                            title: motion.name.isEmpty
@@ -244,6 +239,30 @@ final class MMDMotionLibrary: ObservableObject {
         }
     }
 
+    /// One copy of a track, shared by every clip that references it. Four
+    /// VMDs in one pack used to duplicate the same 3 MB wav four times.
+    private func storeAudio(_ url: URL) -> URL? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let hash = Self.contentHash(data)
+        let folder = rootURL.appendingPathComponent("_audio/\(hash)", isDirectory: true)
+        let target = folder.appendingPathComponent(url.lastPathComponent)
+        if FileManager.default.fileExists(atPath: target.path) { return target }
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FileManager.default.copyItem(at: url, to: target)
+            return target
+        } catch {
+            MMDLog.shared.warning("Motion library audio copy failed: \(error.localizedDescription)", category: "Motion")
+            return nil
+        }
+    }
+
+    private func relativePath(of url: URL) -> String {
+        let root = rootURL.standardizedFileURL.path + "/"
+        let path = url.standardizedFileURL.path
+        return path.hasPrefix(root) ? String(path.dropFirst(root.count)) : url.lastPathComponent
+    }
+
     private static func matchingAudio(for vmd: URL, in audioFiles: [URL]) -> URL? {
         let stem = vmd.deletingPathExtension().lastPathComponent.lowercased()
         if let match = audioFiles.first(where: {
@@ -270,8 +289,34 @@ final class MMDMotionLibrary: ObservableObject {
         let folder = rootURL.appendingPathComponent(asset.id, isDirectory: true)
         try? FileManager.default.removeItem(at: folder)
         assets.removeAll { $0.id == asset.id }
+        removeUnreferencedAudio()
         save()
         MMDLog.shared.info("Motion library removed \(asset.fileName)")
+    }
+
+    /// Audio is shared, so it can only go when the last clip referencing it
+    /// is gone.
+    private func removeUnreferencedAudio() {
+        let referenced = Set(assets.compactMap { $0.relativeAudioPath })
+        let folder = rootURL.appendingPathComponent("_audio", isDirectory: true)
+        guard let hashFolders = try? FileManager.default.contentsOfDirectory(at: folder,
+                                                                             includingPropertiesForKeys: nil,
+                                                                             options: [.skipsHiddenFiles]) else { return }
+        for hashFolder in hashFolders {
+            let files = (try? FileManager.default.contentsOfDirectory(at: hashFolder,
+                                                                     includingPropertiesForKeys: nil,
+                                                                     options: [.skipsHiddenFiles])) ?? []
+            if files.isEmpty { try? FileManager.default.removeItem(at: hashFolder) }
+            for file in files where !referenced.contains(relativePath(of: file)) {
+                try? FileManager.default.removeItem(at: file)
+            }
+            if let left = try? FileManager.default.contentsOfDirectory(at: hashFolder,
+                                                                      includingPropertiesForKeys: nil,
+                                                                      options: [.skipsHiddenFiles]),
+               left.isEmpty {
+                try? FileManager.default.removeItem(at: hashFolder)
+            }
+        }
     }
 
     /// Per-session copies made by the old per-document importer. The library

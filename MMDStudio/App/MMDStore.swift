@@ -526,7 +526,22 @@ final class MMDStore: ObservableObject {
 
         // 3. Only one character in the archive: everything else is its prop.
         if characters.count == 1, let index = characters.first { return all[index] }
-        return nil
+
+        // 4. Several entries but one name — the same model exported twice
+        //    (with and without collision, for example). Props still belong to
+        //    that character.
+        let distinctNames = Set(characters.map { all[$0].displayName })
+        if distinctNames.count == 1, let index = characters.first { return all[index] }
+
+        // 5. Otherwise fall back to the largest model: in a mixed archive that
+        //    is the character, and a prop attached to the wrong sibling is
+        //    still better than a prop floating on its own.
+        func fileSize(_ index: Int) -> Int {
+            let url = URL(fileURLWithPath: all[index].pmxPath)
+            return (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        }
+        let biggest = characters.max { fileSize($0) < fileSize($1) }
+        return biggest.map { all[$0] }
     }
 
     private static func propLabel(for entry: MMDModelEntry,

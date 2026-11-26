@@ -36,6 +36,10 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     @Published var motion: VMDMotion?
     @Published var motionName: String = ""
     @Published var useCameraMotion: Bool = false
+    /// A camera-only VMD chosen from the motion library. Kept apart from
+    /// `motion` so picking a different shot never replaces the dance.
+    @Published var cameraMotion: VMDMotion?
+    @Published var cameraMotionName: String = ""
     /// Set while a video export owns the renderer. Physics then advances by a
     /// fixed 1/fps step instead of the wall-clock delta, so a 60 fps render
     /// simulates the same cloth on every run and does not jitter when a frame
@@ -142,8 +146,13 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     /// value in frames; exposing seconds here used to stop a 464-frame clip at
     /// frame 15.47 (about half a second).
     var duration: Float {
-        guard let motion else { return 0 }
-        return max(0.1, Float(motion.maxFrame))
+        // A library shot can be longer than the dance, and a camera-only
+        // session has no dance at all; the timeline has to cover both or the
+        // scrubber stops at 0.1 s while the camera keeps moving for 15 s.
+        let boneEnd = motion?.maxFrame ?? 0
+        let cameraEnd = cameraMotion?.maxFrame ?? 0
+        guard boneEnd > 0 || cameraEnd > 0 else { return 0 }
+        return max(0.1, Float(max(boneEnd, cameraEnd)))
     }
 
     var frameRate: Float { max(1, motion?.frameRate ?? 30) }
@@ -151,6 +160,15 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     var durationSeconds: Float { duration / frameRate }
 
     var hasMotion: Bool { motion != nil && !(motion?.isEmpty ?? true) }
+
+    /// Camera keys actually used for rendering: the library shot if one is
+    /// loaded, otherwise whatever the dance carries.
+    var activeCameraKeys: [VMDCameraKeyframe] {
+        if let cameraMotion, !cameraMotion.cameraKeys.isEmpty { return cameraMotion.cameraKeys }
+        return motion?.cameraKeys ?? []
+    }
+
+    var hasCameraMotion: Bool { !activeCameraKeys.isEmpty }
 
     var timeText: String {
         Self.formatTime(currentFrame / frameRate)
@@ -180,12 +198,21 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     func loadMotion(asset: MMDMotionAsset, from library: MMDMotionLibrary) throws -> Int {
         let url = library.fileURL(for: asset)
         let loaded = try VMDParser(data: try Data(contentsOf: url)).parse()
-        let mapped = try installMotion(loaded, name: asset.title)
         if asset.kind == .camera {
-            // A camera asset has no bone tracks; the switch is the only way
-            // the user can see the framing it carries.
+            // A camera file only carries keys. Installing it as the motion
+            // would silently delete the dance that is already playing.
+            guard !loaded.cameraKeys.isEmpty else {
+                throw MMDLoadError.invalidData("这个文件没有相机关键帧")
+            }
+            cameraMotion = loaded
+            cameraMotionName = asset.title
             useCameraMotion = true
+            MMDLog.shared.info("Library camera loaded: \(asset.fileName), keys=\(loaded.cameraKeys.count)",
+                               category: "Motion")
+            objectWillChange.send()
+            return loaded.cameraKeys.count
         }
+        let mapped = try installMotion(loaded, name: asset.title)
         if let audioURL = library.audioURL(for: asset) {
             do {
                 let player = try AVAudioPlayer(contentsOf: audioURL)
@@ -248,7 +275,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         springPhysics.prepare(model: model)
         // VMD camera motion is opt-in. Auto-enabling it makes a user's first
         // camera swipe appear to do nothing, because the VMD camera wins.
-        useCameraMotion = false
+        // An explicitly chosen library shot survives a dance change.
+        useCameraMotion = cameraMotion == nil ? false : useCameraMotion
         boneRotations.removeAll()
         boneOffsets.removeAll()
         buildMotionMaps(newMotion)
@@ -311,6 +339,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         lipSyncEnvelope = []
         motion = nil
         motionName = ""
+        cameraMotion = nil
+        cameraMotionName = ""
         motionMappingNote = ""
         motionBoneTracks = [:]
         motionMorphTracks = [:]
@@ -731,7 +761,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     }
 
     func play() {
-        guard hasMotion else { return }
+        guard hasMotion || hasCameraMotion else { return }
         if currentFrame >= duration - 0.05 { currentFrame = 0 }
         isPlaying = true
         if let audioPlayer {
@@ -757,7 +787,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     }
 
     private func tick() {
-        guard isPlaying, hasMotion else { return }
+        guard isPlaying, hasMotion || hasCameraMotion else { return }
         let now = CACurrentMediaTime()
         let delta = Float(max(0, now - lastTick))
         lastTick = now
@@ -796,7 +826,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     /// pose for four consecutive frames, which read as stutter even though the
     /// frame counter said 120.
     func interpolatedFrame(now: CFTimeInterval = CACurrentMediaTime()) -> Float {
-        guard isPlaying, hasMotion else { return currentFrame }
+        guard isPlaying, hasMotion || hasCameraMotion else { return currentFrame }
         let elapsed = Float(max(0, now - lastTick))
         var frame = currentFrame + elapsed * frameRate * max(0.1, playbackSpeed)
         if loopPlayback, duration > 0.1 {

@@ -419,7 +419,7 @@ struct ModelViewerView: View {
                             }
                         }
                     }
-                    if !(document.motion?.cameraKeys.isEmpty ?? true) {
+                    if document.hasCameraMotion {
                         Toggle("使用 VMD 相机", isOn: Binding(get: { document.useCameraMotion },
                                                             set: { document.useCameraMotion = $0 }))
                     }
