@@ -443,8 +443,8 @@ struct MMDMotionCandidate: Identifiable {
 
     var summary: String {
         let seconds = Int(durationSeconds.rounded())
-        return String(format: "%d:%02d · 骨骼 %d · 表情 %d", seconds / 60, seconds % 60,
-                      mappedBoneCount, morphTrackCount)
+        let clock = String(format: "%d:%02d", seconds / 60, seconds % 60)
+        return "\(clock) · 匹配 \(mappedBoneCount) 根骨骼 · 表情 \(morphTrackCount) · \(boneTrackCount) 条轨道"
     }
 }
 
