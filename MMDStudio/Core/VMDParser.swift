@@ -1,3 +1,10 @@
+//
+//  VMDParser.swift
+//  MMD Studio
+//
+//  VMD 动作解析：骨骼轨、表情轨、镜头帧。
+//
+
 import Foundation
 import simd
 

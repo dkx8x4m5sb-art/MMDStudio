@@ -1,3 +1,10 @@
+//
+//  MMDRenderer.swift
+//  MMD Studio
+//
+//  Metal 渲染器：主画面、离屏出图、骨骼与物理调试线框。
+//
+
 import Foundation
 import Metal
 import MetalKit
@@ -71,6 +78,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
     private var loadedSceneRevision = -1
     private var attachmentItems: [UUID: MMDAttachmentRenderItem] = [:]
     private var currentPose: MMDSkeletonPose?
+    /// 屏幕渲染专用的「让位」中间值。面板开合时 document.canvasLift 是跳变，
+    /// 这里每帧向目标逼近，画面就不会瞬移。
+    private var smoothedCanvasLift: Float = 0
     private var lastMorphWeights: [Float] = []
     /// Rest positions and the working morph buffer. `MMDMorphController.positions`
     /// used to allocate two full vertex arrays per change; on a 40k-vertex model
@@ -1603,7 +1613,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         currentPose = pose
 
         var scene = MMDSceneUniforms()
-        scene.viewProjection = projection * viewMatrix
+        scene.viewProjection = canvasAdjustedProjection(projection, document: document) * viewMatrix
         scene.view = viewMatrix
         scene.model = matrix_identity_float4x4
         scene.normalMatrix = matrix_identity_float4x4
@@ -2197,17 +2207,36 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
     /// mesh). On converted characters those two disagree, and that
     /// disagreement is exactly what shows up as a skirt cutting through a
     /// thigh that "clearly has a collider".
+    /// 底部面板占位时，把画面整体上移并缩小，模型仍完整落在可见区域。
+    /// 平移量以 NDC 计（-1…1），0.34 约等于屏幕高度的 17%。
+    private func canvasAdjustedProjection(_ projection: simd_float4x4,
+                                          document: MMDModelDocument) -> simd_float4x4 {
+        let target = max(0, min(0.6, document.canvasLift))
+        smoothedCanvasLift += (target - smoothedCanvasLift) * 0.18
+        if abs(target - smoothedCanvasLift) < 0.002 { smoothedCanvasLift = target }
+        guard smoothedCanvasLift > 0.001 else { return projection }
+        let zoom = 1 - smoothedCanvasLift * 0.42
+        var adjust = matrix_identity_float4x4
+        adjust.columns.0.x = 1 / zoom
+        adjust.columns.1.y = 1 / zoom
+        adjust.columns.3.y = smoothedCanvasLift
+        return adjust * projection
+    }
+
     private func appendPhysicsWireframe(document: MMDModelDocument, model: PMXModel,
                                         pose: MMDSkeletonPose,
                                         into vertices: inout [MMDDrawVertex]) {
         let dynamicColor = SIMD4<Float>(1.0, 0.52, 0.15, 0.95)
-        let kinematicColor = SIMD4<Float>(0.35, 0.85, 0.98, 0.9)
-        let staticColor = SIMD4<Float>(0.58, 0.63, 0.72, 0.7)
+        let kinematicColor = SIMD4<Float>(0.35, 0.85, 0.98, 0.85)
+        // Static bodies are only context; keeping them bright turned 250
+        // bodies into a wall that hid the model.
+        let staticColor = SIMD4<Float>(0.58, 0.63, 0.72, 0.30)
         let colliderColor = SIMD4<Float>(0.32, 1.0, 0.55, 0.5)
         let hasMatrix = pose.worldMatrices.count == model.bones.count
+        let restWorld = skeleton?.restWorld ?? []
 
         if document.renderSettings.showRigidBodies {
-            let segments = model.rigidBodies.count > 140 ? 10 : 18
+            let segments = model.rigidBodies.count > 140 ? 8 : 16
             for body in model.rigidBodies {
                 let boneMatrix: simd_float4x4
                 if body.boneIndex >= 0, hasMatrix,
@@ -2216,10 +2245,19 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
                 } else {
                     boneMatrix = matrix_identity_float4x4
                 }
-                let rotation = quatFromEuler(SIMD3<Float>(mmdRadians(body.rotation.x),
-                                                          mmdRadians(body.rotation.y),
-                                                          mmdRadians(body.rotation.z)))
-                let world = boneMatrix
+                // PMX 刚体的 position / rotation 存的是**模型坐标系下的绝对值**，
+                // 不是骨骼局部偏移。要让它跟着骨骼动，必须取「骨骼当前矩阵 ×
+                // 绑定矩阵的逆」这个差量去搬，直接乘骨骼矩阵会把绝对坐标又变换一遍，
+                // 于是每个盒子都被甩到两倍远处，看起来就是「框架比模型大一圈」。
+                let boneMotion: simd_float4x4
+                if body.boneIndex >= 0, restWorld.indices.contains(body.boneIndex) {
+                    boneMotion = boneMatrix * restWorld[body.boneIndex].inverse
+                } else {
+                    boneMotion = matrix_identity_float4x4
+                }
+                // rotation 在 PMX 里已经是弧度，再乘 π/180 会让所有盒子近乎轴对齐。
+                let rotation = quatFromEuler(body.rotation)
+                let world = boneMotion
                     * simd_float4x4.translation(body.position)
                     * simd_float4x4(quaternion: rotation)
                 let center = world.translation

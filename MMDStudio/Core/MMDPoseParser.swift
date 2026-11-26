@@ -1,3 +1,10 @@
+//
+//  MMDPoseParser.swift
+//  MMD Studio
+//
+//  VPD 姿势解析。
+//
+
 import Foundation
 import CoreFoundation
 import simd

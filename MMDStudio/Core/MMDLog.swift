@@ -1,3 +1,10 @@
+//
+//  MMDLog.swift
+//  MMD Studio
+//
+//  运行日志：内存环形缓冲 + 文件落盘。
+//
+
 import Foundation
 import os.log
 

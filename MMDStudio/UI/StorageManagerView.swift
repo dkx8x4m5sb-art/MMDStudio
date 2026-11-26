@@ -1,3 +1,10 @@
+//
+//  StorageManagerView.swift
+//  MMD Studio
+//
+//  存储管理界面。
+//
+
 import SwiftUI
 
 /// Storage overview + file manager. Two entry points matter here: a one-tap

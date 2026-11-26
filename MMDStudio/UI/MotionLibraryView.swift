@@ -1,3 +1,10 @@
+//
+//  MotionLibraryView.swift
+//  MMD Studio
+//
+//  动作与镜头库选择器。
+//
+
 import SwiftUI
 import UniformTypeIdentifiers
 

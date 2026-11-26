@@ -1,3 +1,10 @@
+//
+//  MMDModelExport.swift
+//  MMD Studio
+//
+//  模型与动作的导出（PMX 复制、清单生成）。
+//
+
 import Foundation
 import AVFoundation
 import CoreGraphics

@@ -1,3 +1,10 @@
+//
+//  MMDModelDocument.swift
+//  MMD Studio
+//
+//  画布文档：模型、动作、物理与渲染设置的唯一持有者。
+//
+
 import Foundation
 import SwiftUI
 import Combine
@@ -78,6 +85,10 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     /// True when Bullet is driving the current model (auto or explicit).
     var physicsRunsRigidBodies: Bool { springPhysics.bulletActive && physicsSettings.mode != .secondary && physicsSettings.mode != .off }
     @Published var errorMessage: String?
+    /// 画布让位量：0 表示正常构图，>0 时把画面整体上移并轻微缩小，
+    /// 让底部弹出的调试面板不会压住模型。渲染器会把这个值平滑过渡，
+    /// 所以这里直接写目标值即可，不需要自己做动画。
+    @Published var canvasLift: Float = 0
 
     private(set) var motionBoneTracks: [Int: VMDBoneTrack] = [:]
     private(set) var motionMorphTracks: [Int: VMDMorphTrack] = [:]

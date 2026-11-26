@@ -1,3 +1,10 @@
+//
+//  ZipArchive.swift
+//  MMD Studio
+//
+//  无第三方依赖的 ZIP 读取，支持截断包的文件头恢复。
+//
+
 import Foundation
 #if canImport(CoreFoundation)
 import CoreFoundation

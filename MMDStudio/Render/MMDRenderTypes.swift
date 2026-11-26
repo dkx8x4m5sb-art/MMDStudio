@@ -1,3 +1,10 @@
+//
+//  MMDRenderTypes.swift
+//  MMD Studio
+//
+//  渲染设置、统计与着色参数类型。
+//
+
 import Foundation
 import simd
 

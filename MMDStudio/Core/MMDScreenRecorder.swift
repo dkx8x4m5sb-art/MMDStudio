@@ -1,3 +1,10 @@
+//
+//  MMDScreenRecorder.swift
+//  MMD Studio
+//
+//  引擎内录制：逐帧编码为视频。
+//
+
 import AVFoundation
 import Foundation
 import Photos

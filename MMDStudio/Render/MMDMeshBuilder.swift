@@ -1,3 +1,10 @@
+//
+//  MMDMeshBuilder.swift
+//  MMD Studio
+//
+//  把 PMX 数据转成 Metal 顶点与索引缓冲。
+//
+
 import Foundation
 import Metal
 import simd

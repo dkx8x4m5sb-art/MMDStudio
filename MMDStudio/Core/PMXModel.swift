@@ -1,3 +1,10 @@
+//
+//  PMXModel.swift
+//  MMD Studio
+//
+//  模型数据结构：网格、材质、骨骼、变形、刚体、关节。
+//
+
 import Foundation
 import simd
 

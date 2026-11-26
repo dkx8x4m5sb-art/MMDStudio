@@ -1,3 +1,10 @@
+//
+//  MMDAnimation.swift
+//  MMD Studio
+//
+//  骨骼求解：蒙皮矩阵、IK、骨骼链弹簧与 PMX 刚体（Bullet）。
+//
+
 import Foundation
 import simd
 
@@ -1737,9 +1744,9 @@ final class MMDSpringPhysics {
         for (index, body) in bodies.enumerated() {
             let bone = (body.boneIndex >= 0 && body.boneIndex < boneCount) ? body.boneIndex : -1
             let boneRest = bone >= 0 ? restWorldPos[bone] : .zero
-            let bodyRotation = quatFromEuler(SIMD3<Float>(mmdRadians(body.rotation.x),
-                                                          mmdRadians(body.rotation.y),
-                                                          mmdRadians(body.rotation.z)))
+            // PMX 里的刚体旋转按规范存的是弧度，不是角度；当成角度再转一次
+            // 只会在 0 附近抖动，裙摆刚体的初始朝向就被抹平了。
+            let bodyRotation = quatFromEuler(body.rotation)
             // Mode 0 follows its bone and exists only to be collided with;
             // modes 1 and 2 are simulated and write back.
             //
@@ -1808,9 +1815,8 @@ final class MMDSpringPhysics {
                   let slotB = slotForHandle[handleB] else { continue }
             let handleA = joint.bodyA >= 0 ? (handleForBody[joint.bodyA] ?? -1) : -1
 
-            let jointRotation = quatFromEuler(SIMD3<Float>(mmdRadians(joint.rotation.x),
-                                                           mmdRadians(joint.rotation.y),
-                                                           mmdRadians(joint.rotation.z)))
+            // 同刚体：关节旋转同样是弧度。
+            let jointRotation = quatFromEuler(joint.rotation)
             let bodyB = bodies[joint.bodyB]
             let frameB = Self.localFrame(position: joint.position,
                                          rotation: jointRotation,

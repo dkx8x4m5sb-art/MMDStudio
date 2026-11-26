@@ -1,3 +1,10 @@
+//
+//  MMDMetalView.swift
+//  MMD Studio
+//
+//  Metal 视图的 UIKit 桥接与手势、通知绑定。
+//
+
 import SwiftUI
 import MetalKit
 import UIKit
@@ -42,19 +49,10 @@ struct MMDMetalView: UIViewRepresentable {
             renderer?.resetCamera()
         }
 
-        context.coordinator.observer = NotificationCenter.default.addObserver(
-            forName: .mmdResetCamera, object: nil, queue: .main
-        ) { [weak renderer] _ in
+        context.coordinator.observe(.mmdResetCamera) { [weak renderer] _ in
             renderer?.resetCamera()
         }
-        context.coordinator.cameraObserver = NotificationCenter.default.addObserver(
-            forName: .mmdCameraPreset, object: nil, queue: .main
-        ) { [weak renderer] note in
-            renderer?.applyCameraPreset(note.object as? String ?? "")
-        }
-        context.coordinator.photoObserver = NotificationCenter.default.addObserver(
-            forName: .mmdCapturePhoto, object: nil, queue: .main
-        ) { [weak renderer] note in
+        context.coordinator.observe(.mmdCapturePhoto) { [weak renderer] note in
             // The renderer closes its render encoder before the readback blit;
             // a higher scale temporarily raises the drawable so the saved
             // image is a rendered still, not an on-screen UI screenshot.
@@ -71,32 +69,13 @@ struct MMDMetalView: UIViewRepresentable {
                 }
             }
         }
-        context.coordinator.cameraFOVObserver = NotificationCenter.default.addObserver(
-            forName: .mmdCameraFOV, object: nil, queue: .main
-        ) { [weak renderer] note in
-            renderer?.setCameraFOV((note.object as? NSNumber)?.floatValue ?? 30)
-        }
-        context.coordinator.cameraDistanceObserver = NotificationCenter.default.addObserver(
-            forName: .mmdCameraDistance, object: nil, queue: .main
-        ) { [weak renderer] note in
-            renderer?.setCameraDistance((note.object as? NSNumber)?.floatValue ?? 30)
-        }
-        context.coordinator.autoOrbitObserver = NotificationCenter.default.addObserver(
-            forName: .mmdCameraAutoOrbit, object: nil, queue: .main
-        ) { [weak renderer] note in
-            renderer?.setAutoOrbit((note.object as? NSNumber)?.boolValue ?? false)
-        }
-        context.coordinator.startRecordingObserver = NotificationCenter.default.addObserver(
-            forName: .mmdStartEngineCapture, object: nil, queue: .main
-        ) { [weak renderer] _ in
+        context.coordinator.observe(.mmdStartEngineCapture) { [weak renderer] _ in
             renderer?.setEngineCaptureHandler { data, width, height, rowBytes in
                 MMDScreenRecorder.shared.append(frame: data, width: width,
                                                 height: height, bytesPerRow: rowBytes)
             }
         }
-        context.coordinator.stopRecordingObserver = NotificationCenter.default.addObserver(
-            forName: .mmdStopEngineCapture, object: nil, queue: .main
-        ) { [weak renderer] _ in
+        context.coordinator.observe(.mmdStopEngineCapture) { [weak renderer] _ in
             renderer?.setEngineCaptureHandler(nil)
         }
         return container
@@ -133,69 +112,28 @@ struct MMDMetalView: UIViewRepresentable {
 
     static func dismantleUIView(_ uiView: MMDGestureView, coordinator: Coordinator) {
         uiView.renderView.delegate = nil
-        if let observer = coordinator.observer {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = coordinator.photoObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = coordinator.cameraObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = coordinator.cameraFOVObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = coordinator.cameraDistanceObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = coordinator.autoOrbitObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = coordinator.startRecordingObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
-        if let observer = coordinator.stopRecordingObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
+        coordinator.removeAllObservers()
         coordinator.renderer?.setEngineCaptureHandler(nil)
     }
 
     final class Coordinator {
         var renderer: MMDRenderer?
-        var observer: NSObjectProtocol?
-        var photoObserver: NSObjectProtocol?
-        var cameraObserver: NSObjectProtocol?
-        var cameraFOVObserver: NSObjectProtocol?
-        var cameraDistanceObserver: NSObjectProtocol?
-        var autoOrbitObserver: NSObjectProtocol?
-        var startRecordingObserver: NSObjectProtocol?
-        var stopRecordingObserver: NSObjectProtocol?
+        private var observers: [NSObjectProtocol] = []
+
+        /// 画布需要的通知都从这里登记，销毁时一次性撤销。
+        /// 之前每个通知各占一个字段、各写一段 remove，加一个通知要改三处。
+        func observe(_ name: Notification.Name, handler: @escaping (Notification) -> Void) {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil,
+                                                                   queue: .main, using: handler))
+        }
+
+        func removeAllObservers() {
+            observers.forEach(NotificationCenter.default.removeObserver)
+            observers.removeAll()
+        }
 
         deinit {
-            if let observer {
-                NotificationCenter.default.removeObserver(observer)
-            }
-            if let photoObserver {
-                NotificationCenter.default.removeObserver(photoObserver)
-            }
-            if let cameraObserver {
-                NotificationCenter.default.removeObserver(cameraObserver)
-            }
-            if let cameraFOVObserver {
-                NotificationCenter.default.removeObserver(cameraFOVObserver)
-            }
-            if let cameraDistanceObserver {
-                NotificationCenter.default.removeObserver(cameraDistanceObserver)
-            }
-            if let autoOrbitObserver {
-                NotificationCenter.default.removeObserver(autoOrbitObserver)
-            }
-            if let startRecordingObserver {
-                NotificationCenter.default.removeObserver(startRecordingObserver)
-            }
-            if let stopRecordingObserver {
-                NotificationCenter.default.removeObserver(stopRecordingObserver)
-            }
+            removeAllObservers()
         }
     }
 }

@@ -1,3 +1,10 @@
+//
+//  MMDStudioApp.swift
+//  MMD Studio
+//
+//  App 入口与全局环境对象。
+//
+
 import SwiftUI
 
 @main

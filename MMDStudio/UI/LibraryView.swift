@@ -1,3 +1,10 @@
+//
+//  LibraryView.swift
+//  MMD Studio
+//
+//  模型库界面：角色分组、导入、批量操作。
+//
+
 import SwiftUI
 import UniformTypeIdentifiers
 

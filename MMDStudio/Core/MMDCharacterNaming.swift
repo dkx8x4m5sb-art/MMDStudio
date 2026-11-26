@@ -1,3 +1,10 @@
+//
+//  MMDCharacterNaming.swift
+//  MMD Studio
+//
+//  从模型名与压缩包结构推断角色名、款式名与道具归属。
+//
+
 import Foundation
 
 /// Turns the names an MMD archive actually contains into a character folder

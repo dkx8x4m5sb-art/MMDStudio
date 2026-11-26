@@ -1,3 +1,10 @@
+//
+//  PMXParser.swift
+//  MMD Studio
+//
+//  PMX 2.0 / 2.1 解析。
+//
+
 import Foundation
 import simd
 

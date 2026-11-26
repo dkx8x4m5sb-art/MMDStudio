@@ -1,3 +1,10 @@
+//
+//  DDSDecoder.swift
+//  MMD Studio
+//
+//  DDS 贴图解码（BC1–BC7），系统 ImageIO 不支持的部分。
+//
+
 import Foundation
 
 /// Minimal DDS decoder for the formats commonly found in MMD model rips:

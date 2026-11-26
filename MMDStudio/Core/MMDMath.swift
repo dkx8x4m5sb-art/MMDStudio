@@ -1,3 +1,10 @@
+//
+//  MMDMath.swift
+//  MMD Studio
+//
+//  向量、矩阵与四元数工具，MMD 坐标系转换。
+//
+
 import Foundation
 import simd
 

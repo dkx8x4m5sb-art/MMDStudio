@@ -1,3 +1,10 @@
+//
+//  MMDTextureLoader.swift
+//  MMD Studio
+//
+//  贴图加载：路径解析、格式回退、缓存。
+//
+
 import Foundation
 import Metal
 import CoreGraphics

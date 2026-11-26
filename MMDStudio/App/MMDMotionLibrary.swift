@@ -1,3 +1,10 @@
+//
+//  MMDMotionLibrary.swift
+//  MMD Studio
+//
+//  动作库：按内容哈希去重存放 VMD 与配套音频。
+//
+
 import Combine
 import Foundation
 

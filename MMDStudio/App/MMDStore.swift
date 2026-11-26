@@ -1,3 +1,10 @@
+//
+//  MMDStore.swift
+//  MMD Studio
+//
+//  模型库：导入、按角色归类、持久化。
+//
+
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers

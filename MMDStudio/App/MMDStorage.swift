@@ -1,3 +1,10 @@
+//
+//  MMDStorage.swift
+//  MMD Studio
+//
+//  沙盒存储扫描与清理（模型、导出、素材、缓存四类目录）。
+//
+
 import Combine
 import Foundation
 

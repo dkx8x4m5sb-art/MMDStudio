@@ -1,3 +1,10 @@
+//
+//  ModelViewerView.swift
+//  MMD Studio
+//
+//  画布：Metal 视图、底栏命令、检查器面板。
+//
+
 import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
@@ -86,7 +93,6 @@ struct ModelViewerView: View {
     @State private var showBones = false
     @State private var showSettings = false
     @State private var showLights = false
-    @State private var showCamera = false
     @State private var showRenderStudio = false
     @State private var showSceneEditor = false
     @State private var showMotionLibrary = false
@@ -113,10 +119,13 @@ struct ModelViewerView: View {
                     if document.sceneEditEnabled {
                         CanvasTransformBar(document: document)
                     }
-                    HStack {
+                    HStack(alignment: .top) {
                         Spacer()
-                        if document.renderSettings.showPerformanceHUD {
-                            performanceBadge
+                        VStack(alignment: .trailing, spacing: 6) {
+                            if document.renderSettings.showPerformanceHUD {
+                                performanceBadge
+                            }
+                            displayToggles
                         }
                     }
                 }
@@ -141,33 +150,23 @@ struct ModelViewerView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 6) {
-                StudioCommandBar(
+                CanvasCommandBar(
+                    document: document,
                     showMaterials: $showMaterials,
-                    showTextures: $showTextures,
                     showMorphs: $showMorphs,
-                    showBones: $showBones,
                     showLights: $showLights,
-                    showCamera: $showCamera,
-                    showRenderStudio: $showRenderStudio,
-                    showSceneEditor: $showSceneEditor,
-                    showSettings: $showSettings,
-                    showBonesOverlay: document.renderSettings.showBones,
-                    showRigidBodyOverlay: document.renderSettings.showRigidBodies,
                     isRecording: recorder.isRecording,
+                    onMotion: { showMotionLibrary = true },
+                    onBones: { showBones = true },
+                    onTextures: { showTextures = true },
+                    onScene: { showSceneEditor = true },
+                    onRenderStudio: { showRenderStudio = true },
+                    onExport: { showExportStudio = true },
+                    onSettings: { showSettings = true },
+                    onPose: { showPoseImporter = true },
                     onResetCamera: {
                         NotificationCenter.default.post(name: .mmdResetCamera, object: nil)
-                    },
-                    onToggleBones: {
-                        document.renderSettings.showBones.toggle()
-                    },
-                    onToggleRigidBodies: {
-                        document.renderSettings.showRigidBodies.toggle()
-                        // The collision spheres are what actually stops the
-                        // hem; showing them together is the only way to tell a
-                        // bad collider from a bad cone limit.
-                        if document.renderSettings.showRigidBodies {
-                            document.renderSettings.showPhysicsColliders = true
-                        }
+                        toast = "视角已重置"
                     },
                     onPhoto: {
                         NotificationCenter.default.post(name: .mmdCapturePhoto,
@@ -204,52 +203,29 @@ struct ModelViewerView: View {
             handleMotionLoaded(note)
         }
         .sheet(isPresented: $showMaterials) {
-            MaterialInspectorView(document: document)
-                .presentationDetents([.fraction(0.35), .large])
-                .presentationBackground(.ultraThinMaterial)
-                .presentationCornerRadius(22)
-                .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
+            InspectorPanel(document: document) {
+                MaterialInspectorView(document: document)
+            }
         }
         .sheet(isPresented: $showTextures) {
-            TextureExportView(document: document)
-                .presentationDetents([.fraction(0.35), .large])
-                .presentationBackground(.ultraThinMaterial)
-                .presentationCornerRadius(22)
-                .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
+            InspectorPanel(document: document) {
+                TextureExportView(document: document)
+            }
         }
         .sheet(isPresented: $showMorphs) {
-            MorphInspectorView(document: document)
-                .presentationDetents([.fraction(0.35), .large])
-                .presentationBackground(.ultraThinMaterial)
-                .presentationCornerRadius(22)
-                .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
+            InspectorPanel(document: document) {
+                MorphInspectorView(document: document)
+            }
         }
         .sheet(isPresented: $showBones) {
-            BoneInspectorView(document: document)
-                .presentationDetents([.fraction(0.35), .large])
-                .presentationBackground(.ultraThinMaterial)
-                .presentationCornerRadius(22)
-                .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
+            InspectorPanel(document: document) {
+                BoneInspectorView(document: document)
+            }
         }
         .sheet(isPresented: $showLights) {
-            NavigationStack { LightingInspectorView(document: document) }
-                .presentationDetents([.fraction(0.35), .large])
-                .presentationBackground(.ultraThinMaterial)
-                .presentationCornerRadius(22)
-                .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
-        }
-        .sheet(isPresented: $showCamera) {
-            CameraStudioView(document: document)
-                .presentationDetents([.fraction(0.4), .large])
-                .presentationBackground(.ultraThinMaterial)
-                .presentationCornerRadius(22)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.4)))
-                .presentationDragIndicator(.visible)
+            InspectorPanel(document: document) {
+                NavigationStack { LightingInspectorView(document: document) }
+            }
         }
         .sheet(isPresented: $showRenderStudio) {
             RenderStudioView(document: document)
@@ -257,20 +233,14 @@ struct ModelViewerView: View {
                 .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showSceneEditor) {
-            SceneEditorView(document: document)
-                .presentationDetents([.fraction(0.35), .large])
-                .presentationBackground(.ultraThinMaterial)
-                .presentationCornerRadius(22)
-                .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
+            InspectorPanel(document: document) {
+                SceneEditorView(document: document)
+            }
         }
         .sheet(isPresented: $showSettings) {
-            SettingsInspectorView(document: document)
-                .presentationDetents([.fraction(0.35), .large])
-                .presentationBackground(.ultraThinMaterial)
-                .presentationCornerRadius(22)
-                .presentationDragIndicator(.visible)
-                .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.35)))
+            InspectorPanel(document: document) {
+                SettingsInspectorView(document: document)
+            }
         }
         .sheet(isPresented: $showExportStudio) {
             ExportStudioView(document: document)
@@ -319,6 +289,43 @@ struct ModelViewerView: View {
         }
     }
 
+    /// 画布右上角的常驻显示开关。
+    ///
+    /// 这类开关是「边看边调」的，藏进设置里等于没有：每开一次要弹面板、
+    /// 盖住模型、再关掉。放在画布上直接点，图标亮起即为开启。
+    private var displayToggles: some View {
+        HStack(spacing: 2) {
+            overlayToggle("grid", "网格", isOn: $document.renderSettings.showGrid)
+            overlayToggle("figure.arms.open", "骨架", isOn: $document.renderSettings.showBones)
+            overlayToggle("circle.hexagongrid", "刚体", isOn: $document.renderSettings.showRigidBodies)
+        }
+        .padding(3)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 1))
+    }
+
+    private func overlayToggle(_ symbol: String, _ label: String,
+                               isOn: Binding<Bool>) -> some View {
+        Button {
+            isOn.wrappedValue.toggle()
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 30, height: 26)
+                .foregroundStyle(isOn.wrappedValue
+                                 ? Color(red: 0.38, green: 0.90, blue: 0.98)
+                                 : Color.white.opacity(0.7))
+                .background(isOn.wrappedValue
+                            ? Color(red: 0.38, green: 0.90, blue: 0.98).opacity(0.24)
+                            : Color.clear,
+                            in: Capsule())
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(isOn.wrappedValue ? .isSelected : AccessibilityTraits())
+    }
+
     private var performanceBadge: some View {
         VStack(alignment: .trailing, spacing: 3) {
             HStack(spacing: 8) {
@@ -351,7 +358,7 @@ struct ModelViewerView: View {
 
     private var inspectorIsOpen: Bool {
         showMaterials || showTextures || showMorphs || showBones || showLights ||
-        showCamera || showRenderStudio || showSceneEditor || showSettings
+        showRenderStudio || showSceneEditor || showSettings
     }
 
     private var inspectorScrubBar: some View {
@@ -383,7 +390,6 @@ struct ModelViewerView: View {
         showMorphs = false
         showBones = false
         showLights = false
-        showCamera = false
         showRenderStudio = false
         showSceneEditor = false
         showSettings = false
@@ -449,17 +455,21 @@ struct ModelViewerView: View {
                 }
                 .foregroundStyle(.white.opacity(0.85))
             } else {
-                Button {
-                    showMotionLibrary = true
-                } label: {
-                    Label("选择动作", systemImage: "figure.walk")
-                        .font(.caption.weight(.semibold))
+                // 没动作时不再放一个「选择动作」按钮：底栏第一格就是动作，
+                // 两个入口做同一件事只会让人犹豫点哪个。
+                HStack(spacing: 6) {
+                    Image(systemName: "figure.walk")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.55))
+                    Text("未加载动作 · 点下方「动作」选择")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white.opacity(0.55))
+                    Spacer(minLength: 2)
+                    Text("30 FPS")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.35))
                 }
-                .foregroundStyle(.white)
-                Spacer(minLength: 2)
-                Text("30 FPS")
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundStyle(.white.opacity(0.45))
+                .padding(.horizontal, 2)
             }
         }
         .padding(.horizontal, 10)
@@ -499,10 +509,6 @@ extension Notification.Name {
     static let mmdResetCamera = Notification.Name("mmdResetCameraNotification")
     static let mmdCapturePhoto = Notification.Name("mmdCapturePhotoNotification")
     static let mmdPhotoCaptured = Notification.Name("mmdPhotoCapturedNotification")
-    static let mmdCameraPreset = Notification.Name("mmdCameraPresetNotification")
-    static let mmdCameraFOV = Notification.Name("mmdCameraFOVNotification")
-    static let mmdCameraDistance = Notification.Name("mmdCameraDistanceNotification")
-    static let mmdCameraAutoOrbit = Notification.Name("mmdCameraAutoOrbitNotification")
     static let mmdMotionLoaded = Notification.Name("mmdMotionLoadedNotification")
 }
 
@@ -609,77 +615,167 @@ private struct StylePresetStrip: View {
     }
 }
 
-/// Bottom command bar modelled on a DCC application: direct access to the
-/// inspectors used most often. It scrolls horizontally on narrow iPhones.
-private struct StudioCommandBar: View {
+/// 底部主命令栏。
+///
+/// 旧版本把十二个入口塞进一条可横向滚动的窄条：不滑动根本看不到「骨架」
+/// 「刚体」，而且材质、渲染、设置混在一起，没有分组。现在固定六格、一屏
+/// 看全 —— 动作、材质、表情、灯光四个高频面板，加上物理和更多。
+private struct CanvasCommandBar: View {
+
+    @ObservedObject var document: MMDModelDocument
     @Binding var showMaterials: Bool
-    @Binding var showTextures: Bool
     @Binding var showMorphs: Bool
-    @Binding var showBones: Bool
     @Binding var showLights: Bool
-    @Binding var showCamera: Bool
-    @Binding var showRenderStudio: Bool
-    @Binding var showSceneEditor: Bool
-    @Binding var showSettings: Bool
-    let showBonesOverlay: Bool
-    let showRigidBodyOverlay: Bool
     let isRecording: Bool
+    let onMotion: () -> Void
+    let onBones: () -> Void
+    let onTextures: () -> Void
+    let onScene: () -> Void
+    let onRenderStudio: () -> Void
+    let onExport: () -> Void
+    let onSettings: () -> Void
+    let onPose: () -> Void
     let onResetCamera: () -> Void
-    let onToggleBones: () -> Void
-    let onToggleRigidBodies: () -> Void
     let onPhoto: () -> Void
     let onRecord: () -> Void
 
+    private var accent: Color { Color(red: 0.38, green: 0.90, blue: 0.98) }
+
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 2) {
-                tool("paintpalette", label: "材质") { showMaterials = true }
-                tool("photo.on.rectangle.angled", label: "贴图") { showTextures = true }
-                tool("face.smiling", label: "表情") { showMorphs = true }
-                tool("figure.walk", label: "骨骼") { showBones = true }
-                tool("lightbulb", label: "灯光") { showLights = true }
-                tool("camera.aperture", label: "相机") { showCamera = true }
-                tool("slider.horizontal.3", label: "渲染") { showRenderStudio = true }
-                tool("cube.transparent", label: "场景") { showSceneEditor = true }
-                tool("ellipsis.circle", label: "设置") { showSettings = true }
-                divider
-                tool("arrow.counterclockwise", label: "重置") { onResetCamera() }
-                tool(showBonesOverlay ? "eye.fill" : "eye", label: "骨架",
-                     active: showBonesOverlay) { onToggleBones() }
-                tool(showRigidBodyOverlay ? "circle.hexagongrid.fill" : "circle.hexagongrid",
-                     label: "刚体", active: showRigidBodyOverlay) { onToggleRigidBodies() }
+        HStack(spacing: 0) {
+            Button(action: onMotion) {
+                cell("figure.walk", "动作", active: document.hasMotion)
             }
-            .padding(.horizontal, 6)
+            .buttonStyle(.plain)
+
+            Button { showMaterials = true } label: {
+                cell("paintpalette", "材质", active: showMaterials)
+            }
+            .buttonStyle(.plain)
+
+            Button { showMorphs = true } label: {
+                cell("face.smiling", "表情", active: showMorphs)
+            }
+            .buttonStyle(.plain)
+
+            Button { showLights = true } label: {
+                cell("lightbulb", "灯光", active: showLights)
+            }
+            .buttonStyle(.plain)
+
+            physicsMenu
+            moreMenu
         }
-        .frame(height: 48)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 3)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
             .stroke(Color.white.opacity(0.08), lineWidth: 1))
         .padding(.horizontal, 8)
     }
 
-    private var divider: some View {
-        Rectangle().fill(Color.white.opacity(0.12)).frame(width: 1, height: 24).padding(.horizontal, 3)
+    /// 物理既是最常调的调试项，也是「显示刚体」的开关所在地，
+    /// 所以做成菜单，省掉「进设置 → 找物理 → 再翻回来」的往返。
+    private var physicsMenu: some View {
+        Menu {
+            Picker("物理模式", selection: $document.physicsSettings.mode) {
+                ForEach(MMDPhysicsMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            Divider()
+            Toggle(isOn: $document.renderSettings.showRigidBodies) {
+                Label("显示刚体", systemImage: "circle.hexagongrid")
+            }
+            Toggle(isOn: $document.renderSettings.showPhysicsColliders) {
+                Label("显示碰撞球", systemImage: "circle.dotted")
+            }
+            Divider()
+            Button { document.resetPhysics() } label: {
+                Label("重置物理", systemImage: "arrow.triangle.2.circlepath")
+            }
+        } label: {
+            cell("circle.hexagongrid",
+                 "物理",
+                 active: document.renderSettings.showRigidBodies || document.physicsSettings.mode != .off)
+        }
+        .tint(.white)
     }
 
-    private func tool(_ systemName: String, label: String, active: Bool = false,
-                      action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            VStack(spacing: 3) {
-                Image(systemName: systemName)
-                    .font(.system(size: 14, weight: .semibold))
-                Text(label)
-                    .font(.system(size: 9, weight: .medium))
+    private var moreMenu: some View {
+        Menu {
+            Section("检查器") {
+                Button(action: onBones) { Label("骨骼列表", systemImage: "figure.stand") }
+                Button(action: onTextures) { Label("贴图清单", systemImage: "photo.on.rectangle.angled") }
+                Button(action: onScene) { Label("场景与背景", systemImage: "cube.transparent") }
+                Button(action: onRenderStudio) { Label("渲染工作台", systemImage: "slider.horizontal.3") }
             }
-            .frame(width: 46, height: 42)
-            .foregroundStyle(active ? Color(red: 0.38, green: 0.90, blue: 0.98) : .white.opacity(0.84))
-            .contentShape(Rectangle())
+            Section("画布") {
+                Button(action: onResetCamera) { Label("重置视角", systemImage: "arrow.counterclockwise") }
+                Toggle(isOn: $document.renderSettings.showGrid) {
+                    Label("地面网格", systemImage: "grid")
+                }
+                Toggle(isOn: $document.renderSettings.showGroundShadow) {
+                    Label("地面阴影", systemImage: "circle.dashed")
+                }
+                Toggle(isOn: $document.renderSettings.showPerformanceHUD) {
+                    Label("性能监控", systemImage: "speedometer")
+                }
+            }
+            Section("输出") {
+                Button(action: onPhoto) { Label("保存渲染图", systemImage: "camera.fill") }
+                Button(action: onRecord) {
+                    Label(isRecording ? "停止录制" : "录制视频",
+                          systemImage: isRecording ? "stop.circle" : "record.circle")
+                }
+                Button(action: onExport) { Label("导出工作室", systemImage: "square.and.arrow.up") }
+            }
+            Section {
+                Button(action: onPose) { Label("导入 VPD 姿势", systemImage: "figure.stand") }
+                Button(action: onSettings) { Label("全部设置", systemImage: "gearshape") }
+            }
+        } label: {
+            cell("ellipsis.circle", "更多")
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(label)
+        .tint(.white)
+    }
+
+    private func cell(_ symbol: String, _ label: String, active: Bool = false) -> some View {
+        VStack(spacing: 3) {
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .semibold))
+            Text(label)
+                .font(.system(size: 9, weight: .medium))
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 44)
+        .foregroundStyle(active ? accent : Color.white.opacity(0.85))
+        .contentShape(Rectangle())
     }
 }
 
+/// 所有画布检查器（材质 / 表情 / 灯光 / 设置…）共用的外壳。
+///
+/// 1. 统一半高、圆角、毛玻璃，以前七处各写一遍，改一个间距要改七次；
+/// 2. 面板出现时抬高 `canvasLift`，渲染器把画面上移并轻微缩小，模型不会
+///    被面板压住，调参数时能直接看到结果。
+private struct InspectorPanel<Content: View>: View {
+
+    @ObservedObject var document: MMDModelDocument
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content()
+            .presentationDetents([.fraction(0.46), .large])
+            .presentationBackground(.ultraThinMaterial)
+            .presentationCornerRadius(24)
+            .presentationDragIndicator(.visible)
+            .presentationBackgroundInteraction(.enabled(upThrough: .fraction(0.46)))
+            .onAppear { document.canvasLift = 0.34 }
+            .onDisappear { document.canvasLift = 0 }
+    }
+}
 
 // MARK: - Texture export
 

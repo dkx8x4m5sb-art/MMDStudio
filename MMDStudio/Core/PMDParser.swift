@@ -1,3 +1,10 @@
+//
+//  PMDParser.swift
+//  MMD Studio
+//
+//  PMD 1.0 解析，转换为内部 PMX 结构。
+//
+
 import Foundation
 import CoreFoundation
 import simd
