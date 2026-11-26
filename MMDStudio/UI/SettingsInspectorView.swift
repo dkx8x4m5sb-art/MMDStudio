@@ -262,7 +262,7 @@ struct SettingsInspectorView: View {
                             document.removeMotion()
                         }
                     } else {
-                        Text("尚未加载 VMD 动作。可在播放栏点「导入 VMD 动作」。")
+                        Text("尚未加载动作。点播放栏的「选择动作」打开动作库。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

@@ -464,12 +464,7 @@ struct StorageFilesView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                if isSelecting {
-                    Button("删除", role: .destructive) {
-                        pendingDelete = files.filter { selected.contains($0.id) }
-                    }
-                    .disabled(selected.isEmpty)
-                } else if !files.isEmpty {
+                if !isSelecting && !files.isEmpty {
                     Menu {
                         Button("全选") {
                             selected = Set(files.map(\.id))
@@ -483,21 +478,23 @@ struct StorageFilesView: View {
                     }
                 }
             }
-        }
-        .safeAreaInset(edge: .bottom) {
-            if isSelecting {
-                HStack {
+            // Native bottom bar. The previous custom HStack floated above the
+            // list with its own material, which read as an old-style control
+            // bar next to the rest of the app — and it duplicated the delete
+            // button that also sat in the navigation bar.
+            ToolbarItemGroup(placement: .bottomBar) {
+                if isSelecting {
                     Button("全选") { selected = Set(files.map(\.id)) }
-                    Spacer()
-                    Text("已选 \(selected.count)").font(.caption)
-                    Spacer()
+                    Spacer(minLength: 0)
+                    Text("已选 \(selected.count) 项")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
                     Button("删除", role: .destructive) {
                         pendingDelete = files.filter { selected.contains($0.id) }
                     }
                     .disabled(selected.isEmpty)
                 }
-                .padding()
-                .background(.ultraThinMaterial)
             }
         }
         .alert("删除 \(pendingDelete.count) 个文件？", isPresented: Binding(get: { !pendingDelete.isEmpty },

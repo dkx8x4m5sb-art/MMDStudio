@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct LibraryView: View {
     @EnvironmentObject var store: MMDStore
+    @ObservedObject private var motionLibrary = MMDMotionLibrary.shared
 
     @State private var showImporter = false
     @State private var importError: String?
@@ -27,6 +28,32 @@ struct LibraryView: View {
 
     private var selectedEntries: [MMDModelEntry] {
         store.entries.filter { selectedIDs.contains($0.id) }
+    }
+
+    private struct LibrarySection: Identifiable {
+        let id: String
+        let title: String
+        let entries: [MMDModelEntry]
+    }
+
+    /// One folder per character. A weapon or prop imported next to a character
+    /// is listed under that character's name instead of floating on its own.
+    private var characterSections: [LibrarySection] {
+        var order: [String] = []
+        var map: [String: [MMDModelEntry]] = [:]
+        for entry in ungroupedEntries {
+            let key = entry.ownerName ?? entry.displayName
+            if map[key] == nil { order.append(key) }
+            map[key, default: []].append(entry)
+        }
+        return order.map { LibrarySection(id: $0, title: $0, entries: map[$0] ?? []) }
+    }
+
+    private var motionLibrarySummary: String {
+        let motions = motionLibrary.motions.count
+        let cameras = motionLibrary.cameras.count
+        if motions == 0 && cameras == 0 { return "还没有导入动作，点这里添加" }
+        return "\(motions) 个动作 · \(cameras) 个镜头"
     }
 
     private var ungroupedEntries: [MMDModelEntry] {
@@ -57,6 +84,31 @@ struct LibraryView: View {
                     }
                 }
 
+                Section {
+                    NavigationLink {
+                        MotionLibraryView()
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "figure.walk")
+                                .font(.title3)
+                                .foregroundStyle(.cyan)
+                                .frame(width: 28)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("动作库").font(.headline)
+                                Text(motionLibrarySummary)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                } header: {
+                    Text("动作与镜头")
+                } footer: {
+                    Text("动作包只导入一次；进画布后可任选动作与镜头，不用重复导入。")
+                        .font(.caption2)
+                }
+
                 ForEach(store.groups) { group in
                     let items = store.entries.filter { $0.groupID == group.id }
                     if !items.isEmpty {
@@ -81,9 +133,16 @@ struct LibraryView: View {
                     }
                 }
 
-                if !ungroupedEntries.isEmpty {
-                    Section(header: Text(store.groups.isEmpty ? "模型库" : "未分组")) {
-                        ForEach(ungroupedEntries) { modelRow($0) }
+                ForEach(characterSections) { section in
+                    Section {
+                        ForEach(section.entries) { modelRow($0) }
+                    } header: {
+                        HStack(spacing: 6) {
+                            Label(section.title, systemImage: "folder")
+                            Text("\(section.entries.count)")
+                                .font(.caption.monospacedDigit())
+                            Spacer()
+                        }
                     }
                 }
             }
@@ -124,20 +183,20 @@ struct LibraryView: View {
                     .accessibilityLabel("导入模型")
                 }
             }
-            .safeAreaInset(edge: .bottom) {
-                if isSelecting {
-                    HStack {
+            .toolbar {
+                ToolbarItemGroup(placement: .bottomBar) {
+                    if isSelecting {
                         Button("全选") { selectedIDs = Set(store.entries.map(\.id)) }
-                        Spacer()
-                        Text("已选 \(selectedIDs.count)").font(.caption)
-                        Spacer()
+                        Spacer(minLength: 0)
+                        Text("已选 \(selectedIDs.count) 项")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer(minLength: 0)
                         Button("分组") { showGroupPicker = true }
                             .disabled(selectedIDs.isEmpty)
                         Button("删除", role: .destructive) { pendingDelete = selectedEntries }
                             .disabled(selectedIDs.isEmpty)
                     }
-                    .padding()
-                    .background(.ultraThinMaterial)
                 }
             }
             .sheet(isPresented: $showImporter) {

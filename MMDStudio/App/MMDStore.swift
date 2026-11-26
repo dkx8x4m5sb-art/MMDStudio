@@ -31,6 +31,10 @@ struct MMDModelEntry: Identifiable, Hashable {
     let relativePath: String
     var role: MMDModelRole = .character
     var groupID: UUID?
+    /// Character this model belongs to. Props imported in the same archive get
+    /// folded under their character so the library reads like folders instead
+    /// of one flat pile of PMX files.
+    var ownerName: String?
 
     var folderName: String { packageURL.lastPathComponent }
 }
@@ -121,8 +125,14 @@ final class MMDStore: ObservableObject {
                                         role: Self.isAccessoryPath(relative) ? .accessory : .character,
                                         groupID: packageGroups[packageName]))
         }
+        result = Self.classifyPackages(result)
         result.sort { lhs, rhs in
-            lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
+            let left = lhs.ownerName ?? lhs.displayName
+            let right = rhs.ownerName ?? rhs.displayName
+            if left != right { return left.localizedStandardCompare(right) == .orderedAscending }
+            // The character row goes above its own props.
+            if lhs.role != rhs.role { return lhs.role == .character }
+            return lhs.displayName.localizedStandardCompare(rhs.displayName) == .orderedAscending
         }
         entries = result
         MMDLog.shared.info("Library refreshed: \(result.count) model(s)")
@@ -282,17 +292,20 @@ final class MMDStore: ObservableObject {
                 document.sceneEditEnabled = false
             }
         }
-        // Packages often ship a camera VMD next to the dance. Scanning the
-        // folder and taking the best-scoring clip avoids auto-loading a file
-        // that only moves the camera.
-        do {
-            let job = try document.scanMotion(url: entry.packageURL)
-            if let best = job.best {
-                try document.loadMotion(candidate: best, from: job)
-                MMDLog.shared.info("Auto-loaded motion: \(best.fileName), mapped \(best.mappedBoneCount) bones")
+        // A package that ships a dance gets it imported into the shared
+        // library once (deduplicated by content) and then loads the cut whose
+        // bones actually match this model. Nothing is copied per session.
+        let motionLibrary = MMDMotionLibrary.shared
+        motionLibrary.importBundledMotions(in: entry.packageURL, sourceName: entry.folderName)
+        let bundled = motionLibrary.motions.filter { $0.sourceName == entry.folderName }
+        if let best = document.rankLibraryMotions(bundled, library: motionLibrary).first,
+           best.mapped > 0 {
+            do {
+                try document.loadMotion(asset: best.asset, from: motionLibrary)
+                MMDLog.shared.info("Auto-loaded library motion: \(best.asset.fileName), mapped \(best.mapped) bones")
+            } catch {
+                MMDLog.shared.warning("Auto motion load failed: \(error.localizedDescription)")
             }
-        } catch {
-            MMDLog.shared.warning("Auto motion load failed: \(error.localizedDescription)")
         }
         return document
     }
@@ -457,6 +470,84 @@ final class MMDStore: ObservableObject {
         } catch {
             MMDLog.shared.warning("Legacy SampleModel removal failed: \(error.localizedDescription)")
         }
+    }
+
+    // MARK: - Package classification
+
+    /// One archive usually holds one character plus a handful of weapons and
+    /// props, all with names like `weapon.pmx`, `武器.pmx`, `body_01.pmx`.
+    /// Presenting those as siblings is why the library looked like a junk
+    /// drawer. Group them: character first, props named `角色-道具`.
+    private static func classifyPackages(_ input: [MMDModelEntry]) -> [MMDModelEntry] {
+        var result = input
+        let byPackage = Dictionary(grouping: input.indices, by: { input[$0].packageURL.path })
+        for (_, indices) in byPackage where indices.count > 1 {
+            let characters = indices.filter { input[$0].role == .character }
+            guard !characters.isEmpty else { continue }
+
+            for index in indices {
+                let entry = input[index]
+                guard let owner = ownerModel(for: entry, among: characters, all: input) else { continue }
+                if owner.id == entry.id {
+                    result[index].ownerName = entry.displayName
+                    continue
+                }
+                let label = propLabel(for: entry, character: owner, all: input)
+                result[index].ownerName = owner.displayName
+                if !label.isEmpty, !owner.displayName.hasSuffix(label) {
+                    result[index].displayName = "\(owner.displayName)-\(label)"
+                }
+            }
+        }
+        return result
+    }
+
+    private static func ownerModel(for entry: MMDModelEntry,
+                                   among characters: [Int],
+                                   all: [MMDModelEntry]) -> MMDModelEntry? {
+        let path = entry.relativePath.lowercased()
+        let directory = entry.assetDirectory.standardizedFileURL.path + "/"
+
+        // 1. A prop stored in the same sub-folder as a character belongs to it.
+        let sameFolder = characters.filter {
+            let candidate = all[$0].assetDirectory.standardizedFileURL.path + "/"
+            return directory.hasPrefix(candidate) && candidate != directory
+        }
+        if sameFolder.count == 1, let index = sameFolder.first { return all[index] }
+
+        // 2. The character name appears in the prop's path (common for rips
+        //    that keep `菲欧尼/武器/剑.pmx` together).
+        for index in characters {
+            let name = all[index].displayName.lowercased()
+            if name.count >= 2 && path.contains(name) { return all[index] }
+        }
+
+        // 3. Only one character in the archive: everything else is its prop.
+        if characters.count == 1, let index = characters.first { return all[index] }
+        return nil
+    }
+
+    private static func propLabel(for entry: MMDModelEntry,
+                                  character: MMDModelEntry,
+                                  all: [MMDModelEntry]) -> String {
+        var stem = URL(fileURLWithPath: entry.pmxPath).deletingPathExtension().lastPathComponent
+        if stem.unicodeScalars.contains(where: { (0x0300...0x036F).contains($0.value) }),
+           let repaired = MMDZipArchive.repairedFilename(stem) {
+            stem = repaired
+        }
+        for token in [character.displayName, entry.folderName, entry.packageURL.lastPathComponent]
+        where token.count >= 2 {
+            if stem.lowercased().hasPrefix(token.lowercased()) {
+                stem = String(stem.dropFirst(token.count))
+            }
+        }
+        stem = stem.replacingOccurrences(of: "_", with: " ")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-—·. ").union(.whitespaces))
+        if stem.isEmpty || stem.lowercased() == character.displayName.lowercased() {
+            stem = entry.displayName
+        }
+        if stem.count > 20 { stem = String(stem.prefix(20)) }
+        return stem
     }
 
     // MARK: - Helpers

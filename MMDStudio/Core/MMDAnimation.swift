@@ -742,6 +742,9 @@ final class MMDSpringPhysics {
     // MARK: - Rigid bodies
 
     private var rigidBoneIndices: Set<Int> = []
+    /// Bodies authored on eyes/brows/limbs that were kept kinematic.
+    private var protectedDynamicBodyCount = 0
+    private var protectedBoneSamples: [String] = []
 
     // MARK: - Keywords
 
@@ -884,7 +887,14 @@ final class MMDSpringPhysics {
 
         buildColliders(model: model)
         buildChains(model: model)
+        protectedDynamicBodyCount = 0
+        protectedBoneSamples = []
         buildBulletWorld(model: model)
+        if protectedDynamicBodyCount > 0 {
+            MMDLog.shared.info("Physics: \(protectedDynamicBodyCount) rigid bodies on face/core bones kept kinematic"
+                               + (protectedBoneSamples.isEmpty ? "" : " (\(protectedBoneSamples.joined(separator: ", ")))"),
+                               category: "Physics")
+        }
         reset()
 
         MMDLog.shared.info("Physics: \(clothChainCount) chains / \(drivenBoneCount) cloth bones, "
@@ -1654,7 +1664,23 @@ final class MMDSpringPhysics {
                                                           mmdRadians(body.rotation.z)))
             // Mode 0 follows its bone and exists only to be collided with;
             // modes 1 and 2 are simulated and write back.
-            let dynamic = body.mode >= 1 && bone >= 0
+            //
+            // XR / ZZZ conversions also put bodies on face and core bones. A
+            // dynamic body there overrides the clip every frame: the eyes roll
+            // and the brows jump while the character is standing still. Those
+            // bodies stay kinematic — still collidable, never authoritative.
+            let boneText = bone >= 0 ? (model.bones[bone].name + " " + model.bones[bone].nameEn).lowercased() : ""
+            let protectedBone = bone >= 0 &&
+                (Self.isHumanoidDeformBone(model.bones[bone]) ||
+                 Self.faceKeywords.contains(where: { boneText.contains($0) }) ||
+                 ikBones.contains(bone))
+            if protectedBone && body.mode >= 1 {
+                protectedDynamicBodyCount += 1
+                if protectedBoneSamples.count < 6 {
+                    protectedBoneSamples.append(model.bones[bone].name)
+                }
+            }
+            let dynamic = body.mode >= 1 && bone >= 0 && !protectedBone
             let mass: Float = dynamic ? max(0.001, body.mass) : 0
             // PMX group is 0...15 and the mask is a bitfield over those same
             // groups, which is exactly Bullet's (group, mask) pair — no

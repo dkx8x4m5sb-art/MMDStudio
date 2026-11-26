@@ -67,7 +67,12 @@ struct ModelScreen: View {
                 loadError = error.localizedDescription
             }
         }
-        .onDisappear { document?.pause() }
+        .onDisappear {
+            document?.pause()
+            // The library owns the only copy of each clip now; anything the
+            // old per-document importer staged can go when the canvas closes.
+            MMDMotionLibrary.shared.purgeSessionCache()
+        }
     }
 }
 
@@ -84,10 +89,7 @@ struct ModelViewerView: View {
     @State private var showCamera = false
     @State private var showRenderStudio = false
     @State private var showSceneEditor = false
-    @State private var showMotionImporter = false
-    @State private var motionImport: MMDMotionImport?
-    @State private var motionChoice: UUID?
-    @State private var showMotionPicker = false
+    @State private var showMotionLibrary = false
     @State private var showExportStudio = false
     @State private var showPoseImporter = false
     @State private var motionError: String?
@@ -188,6 +190,9 @@ struct ModelViewerView: View {
         .onReceive(NotificationCenter.default.publisher(for: .mmdRecordingSaved)) { note in
             showToast(note.object as? Bool == true ? "引擎录制已保存到相册" : "录制保存失败，请查看日志")
         }
+        .onReceive(NotificationCenter.default.publisher(for: .mmdMotionLoaded)) { note in
+            handleMotionLoaded(note)
+        }
         .sheet(isPresented: $showMaterials) {
             MaterialInspectorView(document: document)
                 .presentationDetents([.fraction(0.35), .large])
@@ -270,29 +275,8 @@ struct ModelViewerView: View {
                               },
                               onCancel: { showPoseImporter = false })
         }
-        .sheet(isPresented: $showMotionImporter) {
-            MMDDocumentPicker(contentTypes: MMDImportTypes.motionImport,
-                              allowsMultipleSelection: false,
-                              onPick: { urls in
-                                  showMotionImporter = false
-                                  guard let url = urls.first else { return }
-                                  prepareMotion(url: url)
-                              },
-                              onCancel: { showMotionImporter = false })
-        }
-        .sheet(isPresented: $showMotionPicker) {
-            if let job = motionImport {
-                MotionCandidatePicker(job: job,
-                                      selection: $motionChoice,
-                                      onCancel: {
-                                          showMotionPicker = false
-                                          motionImport = nil
-                                      },
-                                      onLoad: { candidate in
-                                          showMotionPicker = false
-                                          confirmMotion(candidate, from: job)
-                                      })
-            }
+        .sheet(isPresented: $showMotionLibrary) {
+            MotionLibraryPicker(document: document)
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -439,8 +423,8 @@ struct ModelViewerView: View {
                         Toggle("使用 VMD 相机", isOn: Binding(get: { document.useCameraMotion },
                                                             set: { document.useCameraMotion = $0 }))
                     }
-                    Button { showMotionImporter = true } label: {
-                        Label("更换动作", systemImage: "arrow.triangle.2.circlepath")
+                    Button { showMotionLibrary = true } label: {
+                        Label("动作库 / 更换动作", systemImage: "arrow.triangle.2.circlepath")
                     }
                     Button { showPoseImporter = true } label: {
                         Label("导入 VPD 姿势", systemImage: "figure.stand")
@@ -456,9 +440,9 @@ struct ModelViewerView: View {
                 .foregroundStyle(.white.opacity(0.85))
             } else {
                 Button {
-                    showMotionImporter = true
+                    showMotionLibrary = true
                 } label: {
-                    Label("导入 VMD / ZIP", systemImage: "square.and.arrow.down")
+                    Label("选择动作", systemImage: "figure.walk")
                         .font(.caption.weight(.semibold))
                 }
                 .foregroundStyle(.white)
@@ -494,55 +478,10 @@ struct ModelViewerView: View {
         }
     }
 
-    /// Scan first, load second. A motion zip holds a camera VMD next to the
-    /// dance, and sometimes one dance per model; picking "the first .vmd" is
-    /// how an import can succeed while playback stays frozen.
-    private func prepareMotion(url: URL) {
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-        do {
-            let job = try document.scanMotion(url: url)
-            guard let best = job.best else {
-                // A camera VMD is a legitimate import: it drives the view, not
-                // the model. Say that out loud instead of failing silently.
-                if !job.cameraOnlyFiles.isEmpty {
-                    motionImport = nil
-                    let keys = try document.loadCameraMotion(from: job)
-                    showToast("这是镜头文件：已启用 VMD 相机（\(keys) 个关键帧），模型本身不会动")
-                    return
-                }
-                throw MMDModelDocument.noPlayableMotion(in: job)
-            }
-            if job.needsChoice {
-                motionImport = job
-                motionChoice = best.id
-                // The document picker is still dismissing; presenting the next
-                // sheet in the same run loop drops it on iOS 16.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                    showMotionPicker = true
-                }
-            } else {
-                motionImport = nil
-                let mapped = try document.loadMotion(candidate: best, from: job)
-                var note = "已加载《\(best.title)》：\(mapped) 根骨骼 · \(best.summary)"
-                if !job.skippedCameraOnly.isEmpty {
-                    note += "（跳过 \(job.skippedCameraOnly.count) 个镜头文件）"
-                }
-                showToast(note)
-            }
-        } catch {
-            motionError = error.localizedDescription
-        }
-    }
-
-    private func confirmMotion(_ candidate: MMDMotionCandidate, from job: MMDMotionImport) {
-        motionImport = nil
-        do {
-            let mapped = try document.loadMotion(candidate: candidate, from: job)
-            showToast("已加载《\(candidate.title)》：\(mapped) 根骨骼 · \(candidate.summary)")
-        } catch {
-            motionError = error.localizedDescription
-        }
+    /// Toast when the library picker loads a clip: the sheet dismisses before
+    /// the mapping count is known, so it reports back through NotificationCenter.
+    private func handleMotionLoaded(_ note: Notification) {
+        if let text = note.object as? String { showToast(text) }
     }
 }
 
@@ -554,6 +493,7 @@ extension Notification.Name {
     static let mmdCameraFOV = Notification.Name("mmdCameraFOVNotification")
     static let mmdCameraDistance = Notification.Name("mmdCameraDistanceNotification")
     static let mmdCameraAutoOrbit = Notification.Name("mmdCameraAutoOrbitNotification")
+    static let mmdMotionLoaded = Notification.Name("mmdMotionLoadedNotification")
 }
 
 /// Blender-like transform controls for the selected scene object. The actual
@@ -882,101 +822,5 @@ private struct TextureExportView: View {
                 }
             }
         }
-    }
-}
-
-/// Two cuts of the same dance in one zip: one for a YYB Miku rig, one for an
-/// Alice rig. Bone names differ, so the user has to say which model the clip
-/// is for; guessing silently is what produced "imported but nothing moves".
-private struct MotionCandidatePicker: View {
-    let job: MMDMotionImport
-    @Binding var selection: UUID?
-    let onCancel: () -> Void
-    let onLoad: (MMDMotionCandidate) -> Void
-
-    private var chosen: MMDMotionCandidate? {
-        job.candidates.first { $0.id == selection } ?? job.candidates.first
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    ForEach(job.candidates) { candidate in
-                        Button {
-                            selection = candidate.id
-                        } label: {
-                            row(candidate)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } header: {
-                    Text("压缩包里有 \(job.candidates.count) 个动作")
-                } footer: {
-                    Text("同一支舞针对不同模型做的版本，骨骼名称并不通用。请选与当前模型同一角色的那个，或按包里的说明选择。")
-                        .font(.caption2)
-                }
-
-                if !job.skippedCameraOnly.isEmpty || !job.unreadable.isEmpty {
-                    Section("已跳过") {
-                        ForEach(job.skippedCameraOnly, id: \.self) { name in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(name).font(.caption.monospaced()).lineLimit(1)
-                                Text("只有相机关键帧；单独导入会作为镜头运动启用 VMD 相机")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        ForEach(job.unreadable, id: \.self) { name in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(name).font(.caption.monospaced()).lineLimit(1)
-                                Text("无法解析，已忽略").font(.caption2).foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("选择动作")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消", action: onCancel)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("载入") { if let chosen { onLoad(chosen) } }
-                        .disabled(chosen == nil)
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
-
-    private func row(_ candidate: MMDMotionCandidate) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image(systemName: selection == candidate.id ? "largecircle.fill.circle" : "circle")
-                .foregroundStyle(selection == candidate.id ? Color.accentColor : Color.secondary)
-                .padding(.top, 1)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(candidate.title)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                Text(candidate.fileName)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Text(candidate.summary)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                if candidate.mappedBoneCount == 0 {
-                    Label("与当前模型骨骼不匹配", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption2)
-                        .foregroundStyle(.orange)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .contentShape(Rectangle())
-        .padding(.vertical, 2)
     }
 }
