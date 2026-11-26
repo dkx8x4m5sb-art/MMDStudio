@@ -22,7 +22,9 @@ private struct MMDLibraryMetadata: Codable {
 struct MMDModelEntry: Identifiable, Hashable {
     /// Stable identity: the PMX path relative to the model library.
     let id: String
-    let displayName: String
+    /// Recomputed when a package is classified: props are renamed to
+    /// `角色-道具` so they read as children of their character.
+    var displayName: String
     let pmxPath: String
     /// Top-level imported folder. Several PMX models may share this folder.
     let packageURL: URL
