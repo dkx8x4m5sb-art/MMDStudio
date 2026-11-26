@@ -72,6 +72,11 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     private(set) var sourceURL: URL?
     private(set) var motionAudioURL: URL?
     @Published var lipSyncStrength: Float = 0.65
+    /// Collision spheres the cloth solver is actually testing against, for the
+    /// debug overlay.
+    var physicsColliderDebug: [MMDPhysicsColliderDebug] { springPhysics.debugColliders }
+    /// True when Bullet is driving the current model (auto or explicit).
+    var physicsRunsRigidBodies: Bool { springPhysics.bulletActive && physicsSettings.mode != .secondary && physicsSettings.mode != .off }
     @Published var errorMessage: String?
 
     private(set) var motionBoneTracks: [Int: VMDBoneTrack] = [:]

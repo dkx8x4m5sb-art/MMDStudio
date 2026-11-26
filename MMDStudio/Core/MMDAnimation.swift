@@ -544,6 +544,7 @@ enum MMDPosePreset: String, CaseIterable, Identifiable {
 /// models is what produced the "flying skirt" reports.
 enum MMDPhysicsMode: String, CaseIterable, Identifiable {
     case off
+    case auto
     case secondary
     case rigid
 
@@ -552,10 +553,28 @@ enum MMDPhysicsMode: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .off: return "关闭"
+        case .auto: return "自动"
         case .secondary: return "摆动（裙/发）"
         case .rigid: return "PMX 刚体"
         }
     }
+
+    var detail: String {
+        switch self {
+        case .off: return "完全跟随动作，不做二次解算"
+        case .auto: return "模型带可用刚体时用 PMX 刚体，否则退回摆动"
+        case .secondary: return "只跑裙/发/飘带的弹簧链，不吃刚体数据"
+        case .rigid: return "把 PMX 的刚体与 6DOF 关节交给 Bullet"
+        }
+    }
+}
+
+/// One collision sphere the cloth solver actually tests against, exposed for
+/// the debug overlay. Not the PMX rigid bodies: those live on the model.
+struct MMDPhysicsColliderDebug {
+    var bone: Int
+    var offset: SIMD3<Float>
+    var radius: Float
 }
 
 /// Real-time secondary-motion and PMX rigid-body solver.
@@ -566,7 +585,7 @@ enum MMDPhysicsMode: String, CaseIterable, Identifiable {
 /// their motion is fed back into the bound bones. This is a compact Bullet-like
 /// approximation, not a bit-exact port of Bullet's constraint solver.
 struct MMDPhysicsSettings {
-    var mode: MMDPhysicsMode = .secondary
+    var mode: MMDPhysicsMode = .auto
     var gravity: Float = 0.75
     var stiffness: Float = 0.4
     var damping: Float = 0.35
@@ -613,6 +632,13 @@ final class MMDSpringPhysics {
 
     private(set) var solvedRigidBodyCount = 0
     private(set) var solvedJointCount = 0
+
+    /// Copy of the solver's collision spheres for the debug overlay.
+    var debugColliders: [MMDPhysicsColliderDebug] {
+        colliderSpheres.map {
+            MMDPhysicsColliderDebug(bone: $0.bone, offset: $0.offset, radius: $0.radius)
+        }
+    }
     /// Every body in the PMX file, simulated or purely a collider.
     private(set) var totalRigidBodyCount = 0
     /// Number of bones the chain solver drives. Surfaced in the inspector so
@@ -737,6 +763,10 @@ final class MMDSpringPhysics {
         /// Anchor velocity for this frame, clamped. Sampled once per frame so
         /// the trailing drag does not depend on how many substeps run.
         var velocity: SIMD3<Float>
+        /// Anchor acceleration for this frame, clamped. This is what makes a
+        /// hem swing when the body starts or stops moving instead of sagging
+        /// behind it, and it is the slider named "惯性".
+        var accel: SIMD3<Float> = .zero
     }
 
     // MARK: - Rigid bodies
@@ -1320,8 +1350,13 @@ final class MMDSpringPhysics {
         // "PMX 刚体" on a model whose rigid-body section is empty (very common
         // for game-ripped characters) used to do nothing at all. Fall back to
         // the chain solver so the switch is never a no-op.
-        let useChains = settings.mode == .secondary
-            || (settings.mode == .rigid && !bulletActive)
+        //
+        // "自动" takes the same decision by itself: a model with a real
+        // jointed body chain is simulated by Bullet, which is how the author
+        // tuned it, and everything else uses the chain solver.
+        let rigidUsable = bulletActive && solvedRigidBodyCount >= 4 && solvedJointCount >= 2
+        let useRigid = settings.mode == .rigid || (settings.mode == .auto && rigidUsable)
+        let useChains = settings.mode == .secondary || !useRigid
         if useChains && !chains.isEmpty {
             if advance {
                 stepChains(settings: settings, dt: dt)
@@ -1331,7 +1366,7 @@ final class MMDSpringPhysics {
             emitChains(into: &result)
         }
 
-        if settings.mode == .rigid && bulletActive {
+        if useRigid && bulletActive {
             if advance { stepBullet(dt: dt) }
             applyBullet(to: &result, model: model)
         }
@@ -1380,7 +1415,11 @@ final class MMDSpringPhysics {
             let speed = simd_length(velocity)
             // A seek or a teleport must not fling the chain across the scene.
             if speed > 12 { velocity *= 12 / speed }
+            var accel = (velocity - chains[index].velocity) / dt
+            let accelLength = simd_length(accel)
+            if accelLength > 60 { accel *= 60 / accelLength }
             chains[index].velocity = velocity
+            chains[index].accel = accel
             chains[index].lastAnchor = anchorPos
         }
 
@@ -1412,6 +1451,7 @@ final class MMDSpringPhysics {
         }
         chain.lastAnchor = anchorPos
         chain.velocity = .zero
+        chain.accel = .zero
         chain.seeded = true
     }
 
@@ -1457,9 +1497,23 @@ final class MMDSpringPhysics {
                 if windStrength > 0.001 {
                     torque += simd_cross(dir, windDir) * (link.drag * 8 * windStrength)
                 }
-                torque += simd_cross(dir, poseDir) * (link.spring * stiffnessScale)
+                // The faster the body moves, the harder the link is pulled
+                // back onto the animated silhouette. A constant spring lets a
+                // quick turn leave the hem a whole link behind, which reads as
+                // "衣服跟不上动作" and is also when it cuts through a thigh.
+                let followBoost = 1 + min(anchorSpeed, 24) * 0.06
+                torque += simd_cross(dir, poseDir) * (link.spring * stiffnessScale * followBoost)
                 if trailing != SIMD3<Float>.zero {
                     torque += simd_cross(dir, trailing) * (anchorSpeed * link.drag * 4)
+                }
+                // Inertial kick: the anchor's own acceleration pushes the link
+                // the opposite way, which is what a skirt does when its owner
+                // starts walking. Without this the hem only ever trails,
+                // because gravity and the pose spring are the only forces.
+                let accelLength = simd_length(chain.accel)
+                if accelLength > 0.05, settings.inertia > 0.001 {
+                    let gain = min(accelLength, 40) * 0.05 * settings.inertia
+                    torque += simd_cross(dir, -chain.accel / accelLength) * (link.drag * gain)
                 }
 
                 var omega = link.omega + torque * h
@@ -1490,17 +1544,39 @@ final class MMDSpringPhysics {
                 dir = clampDir(dir, to: silhouette, maxAngle: link.limitChain * swingScale)
 
                 if link.collides {
-                    let tail = head + dir * link.length
-                    let pushed = pushOut(tail)
-                    if simd_length_squared(pushed - tail) > 1e-8 {
-                        var corrected = (pushed - head).unit
-                        if corrected == SIMD3<Float>.zero { corrected = dir }
-                        corrected = clampDir(corrected, to: previousDir,
-                                             maxAngle: link.bend + linkLimit)
-                        corrected = clampDir(corrected, to: silhouette,
-                                             maxAngle: link.limitChain * swingScale)
-                        dir = corrected
+                    // Sample along the link, not only at its tail. A hem that
+                    // touches a thigh at 60% of the link still has its tip
+                    // inside the leg, and pushing the tip alone lets the
+                    // middle swim through the body — the visible "穿模".
+                    var collided = false
+                    for _ in 0..<2 {
+                        var hit = false
+                        for fraction in [Float(0.4), 0.75, 1.0] {
+                            let sample = head + dir * (link.length * fraction)
+                            let pushed = pushOut(sample)
+                            guard simd_length_squared(pushed - sample) > 1e-8 else { continue }
+                            var corrected = (pushed - head).unit
+                            if corrected == SIMD3<Float>.zero { corrected = dir }
+                            corrected = clampDir(corrected, to: previousDir,
+                                                 maxAngle: link.bend + linkLimit)
+                            corrected = clampDir(corrected, to: silhouette,
+                                                 maxAngle: link.limitChain * swingScale)
+                            // Never trade a body clip for a silhouette break:
+                            // if the clamp undid the push, keep the push and
+                            // let the cone absorb it on the next step.
+                            if simd_length_squared((head + corrected * link.length) - pushed) > 1e-6 {
+                                corrected = (pushed - head).unit
+                            }
+                            dir = corrected
+                            hit = true
+                            collided = true
+                            break
+                        }
+                        if !hit { break }
                     }
+                    // Sliding contact must bleed energy, otherwise the hem
+                    // vibrates against the collider at the step rate.
+                    if collided { omega *= 0.55 }
                 }
 
                 link.dir = dir.unit
@@ -1538,7 +1614,9 @@ final class MMDSpringPhysics {
             let centre = worldPos[bone] + poseQuat[bone].act(sphere.offset)
             let offset = result - centre
             let distanceSquared = simd_dot(offset, offset)
-            let radius = sphere.radius
+            // 4% of skin clearance: cloth is a surface, not a point, and the
+            // 65th-percentile mesh radius already sits inside the silhouette.
+            let radius = sphere.radius * 1.04
             guard distanceSquared < radius * radius else { continue }
             let distance = sqrt(distanceSquared)
             let normal = distance > 1e-5 ? offset / distance : SIMD3<Float>(0, 0, 1)

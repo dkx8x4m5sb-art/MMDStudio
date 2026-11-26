@@ -442,6 +442,12 @@ struct MMDAttachment: Identifiable {
 struct MMDRenderSettings {
     var showGrid: Bool = false
     var showBones: Bool = false
+    /// Debug wireframes for the physics stage: the PMX rigid bodies as the
+    /// file describes them, and the collision spheres the solver actually
+    /// uses. The two rarely match on converted models, which is why a skirt
+    /// clips through a thigh that "obviously has a collider".
+    var showRigidBodies: Bool = false
+    var showPhysicsColliders: Bool = false
     var showGroundShadow: Bool = true
     var edgesEnabled: Bool = true
     var edgeScale: Float = 1.0

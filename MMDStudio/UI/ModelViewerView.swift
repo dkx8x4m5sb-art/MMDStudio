@@ -152,12 +152,22 @@ struct ModelViewerView: View {
                     showSceneEditor: $showSceneEditor,
                     showSettings: $showSettings,
                     showBonesOverlay: document.renderSettings.showBones,
+                    showRigidBodyOverlay: document.renderSettings.showRigidBodies,
                     isRecording: recorder.isRecording,
                     onResetCamera: {
                         NotificationCenter.default.post(name: .mmdResetCamera, object: nil)
                     },
                     onToggleBones: {
                         document.renderSettings.showBones.toggle()
+                    },
+                    onToggleRigidBodies: {
+                        document.renderSettings.showRigidBodies.toggle()
+                        // The collision spheres are what actually stops the
+                        // hem; showing them together is the only way to tell a
+                        // bad collider from a bad cone limit.
+                        if document.renderSettings.showRigidBodies {
+                            document.renderSettings.showPhysicsColliders = true
+                        }
                     },
                     onPhoto: {
                         NotificationCenter.default.post(name: .mmdCapturePhoto,
@@ -612,9 +622,11 @@ private struct StudioCommandBar: View {
     @Binding var showSceneEditor: Bool
     @Binding var showSettings: Bool
     let showBonesOverlay: Bool
+    let showRigidBodyOverlay: Bool
     let isRecording: Bool
     let onResetCamera: () -> Void
     let onToggleBones: () -> Void
+    let onToggleRigidBodies: () -> Void
     let onPhoto: () -> Void
     let onRecord: () -> Void
 
@@ -634,6 +646,8 @@ private struct StudioCommandBar: View {
                 tool("arrow.counterclockwise", label: "重置") { onResetCamera() }
                 tool(showBonesOverlay ? "eye.fill" : "eye", label: "骨架",
                      active: showBonesOverlay) { onToggleBones() }
+                tool(showRigidBodyOverlay ? "circle.hexagongrid.fill" : "circle.hexagongrid",
+                     label: "刚体", active: showRigidBodyOverlay) { onToggleRigidBodies() }
             }
             .padding(.horizontal, 6)
         }

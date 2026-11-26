@@ -828,7 +828,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         encodeAttachments(encoder, scene: scene, document: document,
                           characterSkeleton: skeleton, characterPose: pose)
 
-        if lightSettings.photoIncludeBones, lightSettings.showBones {
+        if lightSettings.photoIncludeBones,
+           lightSettings.showBones || document.renderSettings.showRigidBodies
+            || document.renderSettings.showPhysicsColliders {
             buildBoneOverlay(document: document, model: model, pose: pose)
             if let overlayBuffer, overlayCapacity > 0 {
                 encoder.setRenderPipelineState(overlayPipeline)
@@ -1848,8 +1850,10 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         drawCalls += attachmentStats.draws
         triangles += attachmentStats.triangles
 
-        // Bone and scene-transform overlays
-        if document.renderSettings.showBones || document.sceneEditEnabled {
+        // Bone, scene-transform and physics debug overlays
+        if document.renderSettings.showBones || document.sceneEditEnabled
+            || document.renderSettings.showRigidBodies
+            || document.renderSettings.showPhysicsColliders {
             buildBoneOverlay(document: document, model: model, pose: pose,
                              includeGizmo: document.sceneEditEnabled)
             if let overlayBuffer, overlayCapacity > 0 {
@@ -2076,7 +2080,14 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
     private func buildBoneOverlay(document: MMDModelDocument, model: PMXModel, pose: MMDSkeletonPose,
                                   includeGizmo: Bool = false) {
         var vertices = [MMDDrawVertex]()
-        vertices.reserveCapacity(model.bones.count * 2 + 160)
+        var reserved = model.bones.count * 2 + 160
+        if document.renderSettings.showRigidBodies {
+            reserved += model.rigidBodies.count * 120
+        }
+        if document.renderSettings.showPhysicsColliders {
+            reserved += document.physicsColliderDebug.count * 64
+        }
+        vertices.reserveCapacity(reserved)
 
         let normalColor = SIMD4<Float>(0.25, 0.85, 1.0, 0.62)
         let selectedColor = SIMD4<Float>(1.0, 0.62, 0.18, 1.0)
@@ -2167,6 +2178,10 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             }
         }
 
+        if document.renderSettings.showRigidBodies || document.renderSettings.showPhysicsColliders {
+            appendPhysicsWireframe(document: document, model: model, pose: pose, into: &vertices)
+        }
+
         guard !vertices.isEmpty, let buffer = ensureOverlayCapacity(vertices.count) else {
             overlayCapacity = 0
             return
@@ -2174,6 +2189,154 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         let raw = buffer.contents().bindMemory(to: MMDDrawVertex.self, capacity: vertices.count)
         for index in vertices.indices { raw[index] = vertices[index] }
         overlayCapacity = vertices.count
+    }
+
+    /// Wireframes for the physics stage. Two different things are drawn on
+    /// purpose: the rigid bodies the PMX file declares, and the collision
+    /// spheres the cloth solver actually tests against (measured from the
+    /// mesh). On converted characters those two disagree, and that
+    /// disagreement is exactly what shows up as a skirt cutting through a
+    /// thigh that "clearly has a collider".
+    private func appendPhysicsWireframe(document: MMDModelDocument, model: PMXModel,
+                                        pose: MMDSkeletonPose,
+                                        into vertices: inout [MMDDrawVertex]) {
+        let dynamicColor = SIMD4<Float>(1.0, 0.52, 0.15, 0.95)
+        let kinematicColor = SIMD4<Float>(0.35, 0.85, 0.98, 0.9)
+        let staticColor = SIMD4<Float>(0.58, 0.63, 0.72, 0.7)
+        let colliderColor = SIMD4<Float>(0.32, 1.0, 0.55, 0.5)
+        let hasMatrix = pose.worldMatrices.count == model.bones.count
+
+        if document.renderSettings.showRigidBodies {
+            let segments = model.rigidBodies.count > 140 ? 10 : 18
+            for body in model.rigidBodies {
+                let boneMatrix: simd_float4x4
+                if body.boneIndex >= 0, hasMatrix,
+                   pose.worldMatrices.indices.contains(body.boneIndex) {
+                    boneMatrix = pose.worldMatrices[body.boneIndex]
+                } else {
+                    boneMatrix = matrix_identity_float4x4
+                }
+                let rotation = quatFromEuler(SIMD3<Float>(mmdRadians(body.rotation.x),
+                                                          mmdRadians(body.rotation.y),
+                                                          mmdRadians(body.rotation.z)))
+                let world = boneMatrix
+                    * simd_float4x4.translation(body.position)
+                    * simd_float4x4(quaternion: rotation)
+                let center = world.translation
+                let axisX = SIMD3<Float>(world.columns.0.x, world.columns.0.y, world.columns.0.z).unit
+                let axisY = SIMD3<Float>(world.columns.1.x, world.columns.1.y, world.columns.1.z).unit
+                let axisZ = SIMD3<Float>(world.columns.2.x, world.columns.2.y, world.columns.2.z).unit
+
+                let color: SIMD4<Float>
+                switch body.mode {
+                case 2: color = dynamicColor
+                case 1: color = kinematicColor
+                default: color = staticColor
+                }
+
+                switch body.shape {
+                case 1:
+                    appendBoxWireframe(center: center, axisX: axisX, axisY: axisY, axisZ: axisZ,
+                                       half: body.size, color: color, into: &vertices)
+                case 2:
+                    appendCapsuleWireframe(center: center, axisX: axisX, axisY: axisY, axisZ: axisZ,
+                                           radius: abs(body.size.x), height: abs(body.size.y),
+                                           segments: segments, color: color, into: &vertices)
+                default:
+                    appendSphereWireframe(center: center, axisX: axisX, axisY: axisY, axisZ: axisZ,
+                                          radius: abs(body.size.x), segments: segments,
+                                          color: color, into: &vertices)
+                }
+            }
+        }
+
+        if document.renderSettings.showPhysicsColliders {
+            for collider in document.physicsColliderDebug {
+                guard collider.bone >= 0, hasMatrix,
+                      pose.worldMatrices.indices.contains(collider.bone) else { continue }
+                let matrix = pose.worldMatrices[collider.bone]
+                let rotated = matrix * SIMD4<Float>(collider.offset, 0)
+                let center = matrix.translation + SIMD3<Float>(rotated.x, rotated.y, rotated.z)
+                let axisX = SIMD3<Float>(1, 0, 0)
+                let axisY = SIMD3<Float>(0, 1, 0)
+                let axisZ = SIMD3<Float>(0, 0, 1)
+                appendSphereWireframe(center: center, axisX: axisX, axisY: axisY, axisZ: axisZ,
+                                      radius: collider.radius, segments: 10,
+                                      color: colliderColor, into: &vertices)
+            }
+        }
+    }
+
+    private func appendSphereWireframe(center: SIMD3<Float>,
+                                       axisX: SIMD3<Float>, axisY: SIMD3<Float>, axisZ: SIMD3<Float>,
+                                       radius: Float, segments: Int,
+                                       color: SIMD4<Float>, into vertices: inout [MMDDrawVertex]) {
+        guard radius > 1e-5 else { return }
+        appendCircle(center: center, u: axisX, v: axisY, radius: radius,
+                     segments: segments, color: color, into: &vertices)
+        appendCircle(center: center, u: axisY, v: axisZ, radius: radius,
+                     segments: segments, color: color, into: &vertices)
+        appendCircle(center: center, u: axisZ, v: axisX, radius: radius,
+                     segments: segments, color: color, into: &vertices)
+    }
+
+    private func appendCircle(center: SIMD3<Float>, u: SIMD3<Float>, v: SIMD3<Float>,
+                              radius: Float, segments: Int,
+                              color: SIMD4<Float>, into vertices: inout [MMDDrawVertex]) {
+        let count = max(6, segments)
+        var previous = center + u * radius
+        for index in 1...count {
+            let angle = Float(index) / Float(count) * 2 * Float.pi
+            let point = center + u * (cosf(angle) * radius) + v * (sinf(angle) * radius)
+            vertices.append(MMDDrawVertex(position: previous, color: color))
+            vertices.append(MMDDrawVertex(position: point, color: color))
+            previous = point
+        }
+    }
+
+    private func appendBoxWireframe(center: SIMD3<Float>, axisX: SIMD3<Float>, axisY: SIMD3<Float>,
+                                    axisZ: SIMD3<Float>, half: SIMD3<Float>,
+                                    color: SIMD4<Float>, into vertices: inout [MMDDrawVertex]) {
+        let sx = abs(half.x), sy = abs(half.y), sz = abs(half.z)
+        guard sx > 1e-5, sy > 1e-5, sz > 1e-5 else { return }
+        var corners = [SIMD3<Float>]()
+        corners.reserveCapacity(8)
+        for z in [-1, 1] {
+            for y in [-1, 1] {
+                for x in [-1, 1] {
+                    corners.append(center + axisX * (Float(x) * sx)
+                                   + axisY * (Float(y) * sy) + axisZ * (Float(z) * sz))
+                }
+            }
+        }
+        // Corner index = (z + 1) * 4 + (y + 1) * 2 + (x + 1)
+        let edges: [(Int, Int)] = [
+            (0, 1), (2, 3), (4, 5), (6, 7),
+            (0, 2), (1, 3), (4, 6), (5, 7),
+            (0, 4), (1, 5), (2, 6), (3, 7),
+        ]
+        for (a, b) in edges {
+            vertices.append(MMDDrawVertex(position: corners[a], color: color))
+            vertices.append(MMDDrawVertex(position: corners[b], color: color))
+        }
+    }
+
+    private func appendCapsuleWireframe(center: SIMD3<Float>, axisX: SIMD3<Float>,
+                                        axisY: SIMD3<Float>, axisZ: SIMD3<Float>,
+                                        radius: Float, height: Float, segments: Int,
+                                        color: SIMD4<Float>, into vertices: inout [MMDDrawVertex]) {
+        guard radius > 1e-5 else { return }
+        let halfHeight = max(0, abs(height)) * 0.5
+        let top = center + axisY * halfHeight
+        let bottom = center - axisY * halfHeight
+        appendCircle(center: top, u: axisX, v: axisZ, radius: radius,
+                     segments: segments, color: color, into: &vertices)
+        appendCircle(center: bottom, u: axisX, v: axisZ, radius: radius,
+                     segments: segments, color: color, into: &vertices)
+        for axis in [axisX, -axisX, axisZ, -axisZ] {
+            vertices.append(MMDDrawVertex(position: top + axis * radius, color: color))
+            vertices.append(MMDDrawVertex(position: bottom + axis * radius, color: color))
+        }
     }
 
     private func editorSelectionCenter(document: MMDModelDocument, pose: MMDSkeletonPose) -> SIMD3<Float>? {

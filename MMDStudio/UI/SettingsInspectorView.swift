@@ -66,6 +66,18 @@ struct SettingsInspectorView: View {
                     Toggle("显示地面网格", isOn: $document.renderSettings.showGrid)
                     Toggle("显示地面阴影", isOn: $document.renderSettings.showGroundShadow)
                     Toggle("显示骨骼", isOn: $document.renderSettings.showBones)
+                    Toggle("显示刚体", isOn: $document.renderSettings.showRigidBodies)
+                    Toggle("显示碰撞球", isOn: $document.renderSettings.showPhysicsColliders)
+                    if document.renderSettings.showRigidBodies {
+                        Text("橙=动态刚体，青=骨骼跟随，灰=绑定到静止骨骼；盒/球/胶囊来自 PMX 刚体段。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    if document.renderSettings.showPhysicsColliders {
+                        Text("绿=摆动模式实际用来推裙摆的碰撞球（按蒙皮顶点实测）。和上面的刚体对不上时，穿模就发生在两者之间。")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                     Toggle("启用描边", isOn: $document.renderSettings.edgesEnabled)
                     Toggle("卡通渐变着色", isOn: $document.renderSettings.toonEnabled)
                     Toggle("贴图 V 翻转（MMD 默认开启）", isOn: $document.renderSettings.uvFlipV)
@@ -129,6 +141,9 @@ struct SettingsInspectorView: View {
                             Text(mode.title).tag(mode)
                         }
                     }
+                    Text(document.physicsSettings.mode.detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
                     Toggle("VMD / PMX IK 求解", isOn: $document.ikEnabled)
                     if document.ikEnabled {
                         let chains = document.model.bones.reduce(0) { total, bone in
@@ -145,7 +160,7 @@ struct SettingsInspectorView: View {
                     Text("摆动模式只驱动裙、髪、飘带、翅膀、袖子等二级骨骼，且会跳过所有 IK 链骨骼与人体主骨；默认关闭，导入新模型后可先开「摆动」确认效果。IK 求解默认关闭：部分模型的踝/膝在求解后会扭曲，需要足部贴地时再单独打开。")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
-                    if document.physicsSettings.mode == .rigid {
+                    if document.physicsSettings.mode == .rigid || document.physicsSettings.mode == .auto {
                         Toggle("刚体与地面碰撞", isOn: $document.physicsSettings.collision)
                     }
                     if document.physicsSettings.mode != .off {
