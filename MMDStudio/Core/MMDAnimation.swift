@@ -224,7 +224,11 @@ final class MMDSkeleton {
                   !ik.links.isEmpty else { continue }
             guard budget > 0 else { break }
 
-            let iterations = max(1, min(24, ik.iterations))
+            // PMX authors commonly use 40..255 iterations; capping far below
+            // that leaves the foot short of its target ("soft knee"). 48 is
+            // enough for a two-link leg at the usual 1 rad unit angle, and the
+            // evaluation budget below still protects the frame.
+            let iterations = max(1, min(48, ik.iterations))
             let stepLimit = max(0.15, min(1.2, ik.angleLimit > 0 ? ik.angleLimit : 1.0))
 
             // Euler state per link, in degrees. MMD limits are authored as
@@ -294,11 +298,13 @@ final class MMDSkeleton {
                         angles = Self.clamped(angles, lower: link.lowerLimit, upper: link.upperLimit)
                     } else if Self.isKnee(linkIndex, model: model) {
                         // A knee is a hinge. Any Y/Z rotation added by CCD
-                        // folds the calf sideways; the small positive window
-                        // keeps a locked leg from snapping over-centre.
+                        // folds the calf sideways. Without an authored limit
+                        // the bend direction is unknown (it depends on the
+                        // model's facing), so both sides stay open but the
+                        // sideways axes are removed.
                         angles.y = 0
                         angles.z = 0
-                        angles.x = max(-165, min(8, angles.x))
+                        angles.x = max(-165, min(165, angles.x))
                     } else if Self.isAnkle(linkIndex, model: model) {
                         angles.y = max(-25, min(25, angles.y))
                         angles.z = max(-25, min(25, angles.z))
