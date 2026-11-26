@@ -264,17 +264,13 @@ struct SettingsInspectorView: View {
                         Button("移除动作", role: .destructive) {
                             document.removeMotion()
                         }
+                    } else if document.hasCameraMotion {
+                        Toggle("使用 VMD 相机动作", isOn: $document.useCameraMotion)
+                        Text("尚未加载动作，只用镜头。点播放栏的「选择动作」打开动作库。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     } else {
-                        if document.hasCameraMotion {
-                            Toggle("使用 VMD 相机动作", isOn: $document.useCameraMotion)
-                            Text("尚未加载动作，只用镜头。点播放栏的「选择动作」打开动作库。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Text("尚未加载动作。点播放栏的「选择动作」打开动作库。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                        Text("尚未加载动作。点播放栏的「选择动作」打开动作库。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
