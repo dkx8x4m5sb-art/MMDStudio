@@ -1022,9 +1022,20 @@ private struct InspectorPanel<Content: View>: View {
     @ObservedObject var document: MMDModelDocument
     @ViewBuilder var content: () -> Content
 
+    /// 每次打开都回到小窗。面板实体随 sheet 重建，这个状态也跟着重置，
+    /// 所以上一次拖到全高不会留到下一次。
+    @State private var detent: PresentationDetent = .fraction(0.46)
+
     var body: some View {
         content()
-            .presentationDetents([.fraction(0.46), .large])
+            // 两档高度，默认小窗；只有顶部横条能改高度。
+            //
+            // `presentationContentInteraction(.scrolls)` 是关键：默认的 .automatic
+            // 会把「在内容上往上拖」解释成「把面板拉大」，于是滑一下材质列表，
+            // 面板就自己涨到全屏、盖住模型。改成 .scrolls 之后，内容区域的拖动
+            // 只滚列表，高度只认横条那一下。
+            .presentationDetents([.fraction(0.46), .large], selection: $detent)
+            .presentationContentInteraction(.scrolls)
             .presentationBackground(.ultraThinMaterial)
             .presentationCornerRadius(24)
             .presentationDragIndicator(.visible)
