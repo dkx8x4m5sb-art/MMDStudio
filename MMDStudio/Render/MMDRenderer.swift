@@ -63,6 +63,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
     private var overlayPipeline: MTLRenderPipelineState!
 
     private var opaqueDepthState: MTLDepthStencilState!
+    private var liningDepthState: MTLDepthStencilState!
     private var overlayDepthState: MTLDepthStencilState!
     private var gizmoDepthState: MTLDepthStencilState!
     private var shadowDepthState: MTLDepthStencilState!
@@ -221,6 +222,19 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         opaque.depthCompareFunction = .lessEqual
         opaque.isDepthWriteEnabled = true
         opaqueDepthState = device.makeDepthStencilState(descriptor: opaque)
+
+        // 内衬用严格小于。
+        //
+        // 内衬（裙内 / 带内）常常是外层的一片复制：顶点、UV、深度几乎一模一样，
+        // 有的还比外层多出几毫米。用 lessEqual 时「深度相等也算通过」，内衬
+        // 后画就必然盖掉外层 —— 一开「裙内」，整片下摆被素色衬布糊住，外裙的
+        // 印花消失，就是这个现象。严格小于等于「先到的赢」，配合绘制时给内衬
+        // 加的一点深度偏移，和外层重合的内衬一律判负；它真正露出来的地方
+        // （裙摆翻开、从下往上看）没有外层挡着，照常绘制。
+        let lining = MTLDepthStencilDescriptor()
+        lining.depthCompareFunction = .less
+        lining.isDepthWriteEnabled = true
+        liningDepthState = device.makeDepthStencilState(descriptor: lining)
 
         let overlay = MTLDepthStencilDescriptor()
         overlay.depthCompareFunction = .lessEqual
@@ -706,15 +720,13 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             encoder.setTriangleFillMode(lightSettings.renderMode == .wireframe ? .lines : .fill)
         }
 
-        // 材质按 PMX 声明顺序逐条绘制，不再拆「先不透明、后半透明」两批。
+        // 材质分三档绘制，同档内部保持 PMX 声明顺序：
+        // 普通不透明 → 内衬（裙内 / 带内 / 裏地）→ 半透明。
         //
-        // MMD 的图层契约就是声明顺序：内衬写在前面、外裙写在后面，后画的外裙
-        // 压住内衬。一旦拆成两批，顺序就被翻过来 —— 半透明的内衬反而盖在实心
-        // 外裙之上。个别模型一显示「裙内 / 带内」，整片下摆被一块纯色糊住，
-        // 就是这么来的。
-        //
-        // 半透明材质不写深度：同一处常叠着好几层薄纱，写深度会让后画的层被前
-        // 一层挡掉，只剩最里面那层可见。
+        // 内衬单独排后，是为了让它在和外层完全重合时判负（深度测试用严格小于，
+        // 谁先写谁留）。内衬真正露出来的地方没有外层挡着，照样会画出来。
+        // 半透明不写深度：同一处常叠着好几层薄纱，写深度会让后画的层被前一层
+        // 挡掉，只剩最里面那层可见。
         bindMeshBuffers(encoder, mesh: mesh)
         setScene(scene, encoder: encoder, vertexIndex: 6)
         if let paletteBuffer = updatePaletteBuffer(pose.palettes) {
@@ -722,10 +734,13 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         }
         encoder.setFragmentBytes(&scene, length: MemoryLayout<MMDSceneUniforms>.stride, index: 0)
 
+        let drawOrder = orderedSubMeshes(mesh, model: model, document: document)
+
         // 状态只在真正改变时切换，避免上百条材质反复重设管线。
         var drawnTranslucent: Bool?
+        var drawnLining: Bool?
 
-        for submesh in mesh.subMeshes {
+        for submesh in drawOrder {
             let materialIndex = submesh.materialIndex
             guard document.materialSettings.indices.contains(materialIndex) else { continue }
             let settings = document.materialSettings[materialIndex]
@@ -733,10 +748,15 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             guard settings.visible, settings.diffuse.w > 0.002 else { continue }
 
             let translucent = settings.diffuse.w < 0.999
-            if drawnTranslucent != translucent {
+            let lining = !translucent && Self.isLiningMaterial(model.materials[materialIndex])
+            if drawnTranslucent != translucent || drawnLining != lining {
                 encoder.setRenderPipelineState(translucent ? meshTransparentPipeline : meshOpaquePipeline)
-                encoder.setDepthStencilState(translucent ? overlayDepthState : opaqueDepthState)
+                encoder.setDepthStencilState(translucent ? overlayDepthState
+                                                : (lining ? liningDepthState : opaqueDepthState))
+                encoder.setDepthBias(lining ? Self.liningDepthBias : 0,
+                                     slopeScale: lining ? 1 : 0, clamp: 0)
                 drawnTranslucent = translucent
+                drawnLining = lining
             }
 
             let material = model.materials[materialIndex]
@@ -766,6 +786,8 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
                                           indexBuffer: mesh.indexBuffer,
                                           indexBufferOffset: submesh.indexBufferOffset)
         }
+        // 内衬的深度偏移是逐材质设的，这里复位，别让它带到叠加层和描边上。
+        encoder.setDepthBias(0, slopeScale: 0, clamp: 0)
 
         if lightSettings.edgesEnabled, lightSettings.renderMode.usesEdges {
             encoder.setRenderPipelineState(edgePipeline)
@@ -1684,9 +1706,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             drawCalls += 1
         }
 
-        // 主体：按 PMX 声明顺序逐条绘制，不拆「先不透明、后半透明」两批。
-        // 内衬写在材质表前面、外裙写在后面，拆批会把顺序翻过来，
-        // 裙内就会盖住整片下摆 —— 与实时绘制那段是同一个道理。
+        // 主体：与实时绘制同一套分档 —— 普通不透明 → 内衬 → 半透明，
+        // 同档内部按 PMX 声明顺序。导出和画布必须一致，否则「画布正常、
+        // 保存出来裙内糊一片」。
         bindMeshBuffers(encoder, mesh: mesh)
         setScene(scene, encoder: encoder, vertexIndex: 6)
         if let paletteBuffer = updatePaletteBuffer(pose.palettes) {
@@ -1694,19 +1716,26 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         }
         encoder.setFragmentBytes(&scene, length: MemoryLayout<MMDSceneUniforms>.stride, index: 0)
 
+        let drawOrder = orderedSubMeshes(mesh, model: model, document: document)
         var drawnTranslucent: Bool?
+        var drawnLining: Bool?
 
-        for submesh in mesh.subMeshes {
+        for submesh in drawOrder {
             let materialIndex = submesh.materialIndex
             guard document.materialSettings.indices.contains(materialIndex) else { continue }
             let settings = document.materialSettings[materialIndex]
             guard settings.visible, settings.diffuse.w > 0.002 else { continue }
 
             let translucent = settings.diffuse.w < 0.999
-            if drawnTranslucent != translucent {
+            let lining = !translucent && Self.isLiningMaterial(model.materials[materialIndex])
+            if drawnTranslucent != translucent || drawnLining != lining {
                 encoder.setRenderPipelineState(translucent ? meshTransparentPipeline : meshOpaquePipeline)
-                encoder.setDepthStencilState(translucent ? overlayDepthState : opaqueDepthState)
+                encoder.setDepthStencilState(translucent ? overlayDepthState
+                                                : (lining ? liningDepthState : opaqueDepthState))
+                encoder.setDepthBias(lining ? Self.liningDepthBias : 0,
+                                     slopeScale: lining ? 1 : 0, clamp: 0)
                 drawnTranslucent = translucent
+                drawnLining = lining
             }
 
             let material = model.materials[materialIndex]
@@ -1736,6 +1765,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             drawCalls += 1
             triangles += submesh.indexCount / 3
         }
+        encoder.setDepthBias(0, slopeScale: 0, clamp: 0)
 
         // 描边 pass
         if effectiveEdges {
@@ -1895,6 +1925,65 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    // MARK: - 材质分档
+
+    /// 内衬往里推的深度量，单位是归一化深度。
+    ///
+    /// 约为 2 米处 8 毫米 —— 比裙布厚，比「内衬真的露在外面」的距离小得多。
+    /// 配合 `liningDepthState` 的严格小于，和外层重合（或只差几毫米）的内衬
+    /// 一律判负。
+    static let liningDepthBias: Float = 0.00003
+
+    /// 名字里带「里面那一层」意味的材质：裙内、带内、内衬、裏地……
+    ///
+    /// 这一类图层常常是外层的一片复制（顶点几乎重合、贴图换成素色衬布），
+    /// 作者在 MMD 里靠深度测试让外层把它挡住。名字是唯一可靠的信号：
+    /// PMX 的材质标志位里没有「内衬」这个位。
+    private static let liningKeywords = [
+        "裙内", "裙內", "带内", "帶內", "帯内", "内衬", "內襯", "内裙", "衬裙",
+        "内側", "内侧", "内面", "裏地", "里地", "裏", "inner", "lining",
+        "underside", "underlay",
+    ]
+
+    static func isLiningMaterial(_ name: String) -> Bool {
+        guard !name.isEmpty else { return false }
+        let lower = name.lowercased()
+        return liningKeywords.contains { lower.contains($0) }
+    }
+
+    /// 日文名与英文名都看：有些转换工具只在一侧保留原始命名。
+    static func isLiningMaterial(_ material: PMXMaterial) -> Bool {
+        isLiningMaterial(material.name) || isLiningMaterial(material.nameEn)
+    }
+
+    /// 材质的绘制顺序：普通不透明 → 内衬 → 半透明。
+    ///
+    /// 每一档内部仍按 PMX 声明顺序，所以「同档里的多层布料谁压谁」还是作者
+    /// 写的顺序。跨档重排只影响两类材质：半透明（必须最后画、不写深度）和
+    /// 内衬（和外层完全重合时必须输）。
+    private func orderedSubMeshes(_ mesh: MMDMesh, model: PMXModel,
+                                 document: MMDModelDocument) -> [MMDSubMesh] {
+        var solid: [MMDSubMesh] = []
+        var lining: [MMDSubMesh] = []
+        var blended: [MMDSubMesh] = []
+        solid.reserveCapacity(mesh.subMeshes.count)
+
+        for submesh in mesh.subMeshes {
+            let index = submesh.materialIndex
+            guard index < model.materials.count,
+                  document.materialSettings.indices.contains(index) else { continue }
+            let settings = document.materialSettings[index]
+            if settings.diffuse.w < 0.999 {
+                blended.append(submesh)
+            } else if Self.isLiningMaterial(model.materials[index]) {
+                lining.append(submesh)
+            } else {
+                solid.append(submesh)
+            }
+        }
+        return solid + lining + blended
     }
 
     // MARK: - 辅助
