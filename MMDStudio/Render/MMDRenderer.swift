@@ -706,8 +706,15 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             encoder.setTriangleFillMode(lightSettings.renderMode == .wireframe ? .lines : .fill)
         }
 
-        encoder.setRenderPipelineState(meshOpaquePipeline)
-        encoder.setDepthStencilState(opaqueDepthState)
+        // 材质按 PMX 声明顺序逐条绘制，不再拆「先不透明、后半透明」两批。
+        //
+        // MMD 的图层契约就是声明顺序：内衬写在前面、外裙写在后面，后画的外裙
+        // 压住内衬。一旦拆成两批，顺序就被翻过来 —— 半透明的内衬反而盖在实心
+        // 外裙之上。个别模型一显示「裙内 / 带内」，整片下摆被一块纯色糊住，
+        // 就是这么来的。
+        //
+        // 半透明材质不写深度：同一处常叠着好几层薄纱，写深度会让后画的层被前
+        // 一层挡掉，只剩最里面那层可见。
         bindMeshBuffers(encoder, mesh: mesh)
         setScene(scene, encoder: encoder, vertexIndex: 6)
         if let paletteBuffer = updatePaletteBuffer(pose.palettes) {
@@ -715,11 +722,23 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         }
         encoder.setFragmentBytes(&scene, length: MemoryLayout<MMDSceneUniforms>.stride, index: 0)
 
+        // 状态只在真正改变时切换，避免上百条材质反复重设管线。
+        var drawnTranslucent: Bool?
+
         for submesh in mesh.subMeshes {
             let materialIndex = submesh.materialIndex
             guard document.materialSettings.indices.contains(materialIndex) else { continue }
             let settings = document.materialSettings[materialIndex]
-            guard settings.visible, settings.diffuse.w >= 0.999 else { continue }
+            // 几乎全透明的材质即使标记为「显示」也画不出像素，跳过省填充率。
+            guard settings.visible, settings.diffuse.w > 0.002 else { continue }
+
+            let translucent = settings.diffuse.w < 0.999
+            if drawnTranslucent != translucent {
+                encoder.setRenderPipelineState(translucent ? meshTransparentPipeline : meshOpaquePipeline)
+                encoder.setDepthStencilState(translucent ? overlayDepthState : opaqueDepthState)
+                drawnTranslucent = translucent
+            }
+
             let material = model.materials[materialIndex]
             let baseTexture = (settings.useTexture && material.textureIndex >= 0)
                 ? textures.embeddedOrFallback(index: material.textureIndex, model: model,
@@ -735,7 +754,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(sphereTexture, index: 1)
             encoder.setFragmentTexture(toonTexture, index: 2)
             var uniforms = makeMaterialUniforms(document: document, materialIndex: materialIndex,
-                                                transparent: false, flags: 0,
+                                                transparent: translucent, flags: 0,
                                                 texturePresent: settings.useTexture && material.textureIndex >= 0,
                                                 spherePresent: material.sphereIndex >= 0 && settings.sphereMode != 0,
                                                 toonPresent: settings.useToon)
@@ -781,58 +800,6 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
                                               indexBufferOffset: submesh.indexBufferOffset)
             }
             encoder.setDepthBias(0, slopeScale: 0, clamp: 0)
-        }
-
-        let transparentMeshes = mesh.subMeshes.filter { submesh in
-            guard document.materialSettings.indices.contains(submesh.materialIndex) else { return false }
-            let settings = document.materialSettings[submesh.materialIndex]
-            return settings.visible && settings.diffuse.w < 0.999
-        }.sorted { lhs, rhs in
-            // MMD authors translucent layers in material order (inner layer
-            // first). Sorting by view distance broke that contract and let
-            // skirts and veils bleed through the body at shallow angles.
-            lhs.materialIndex < rhs.materialIndex
-        }
-
-        if !transparentMeshes.isEmpty {
-            encoder.setRenderPipelineState(meshTransparentPipeline)
-            encoder.setDepthStencilState(overlayDepthState)
-            bindMeshBuffers(encoder, mesh: mesh)
-            setScene(scene, encoder: encoder, vertexIndex: 6)
-            if let paletteBuffer = updatePaletteBuffer(pose.palettes) {
-                encoder.setVertexBuffer(paletteBuffer, offset: 0, index: 7)
-            }
-            encoder.setFragmentBytes(&scene, length: MemoryLayout<MMDSceneUniforms>.stride, index: 0)
-            for submesh in transparentMeshes {
-                let materialIndex = submesh.materialIndex
-                let settings = document.materialSettings[materialIndex]
-                let material = model.materials[materialIndex]
-                let baseTexture = (settings.useTexture && material.textureIndex >= 0)
-                    ? textures.embeddedOrFallback(index: material.textureIndex, model: model,
-                                                  baseDirectory: baseDirectory, fallbackRoot: fallbackRoot)
-                    : textures.whiteTexture
-                let sphereTexture = (material.sphereIndex >= 0 && settings.sphereMode != 0)
-                    ? textures.embeddedOrFallback(index: material.sphereIndex, model: model,
-                                                  baseDirectory: baseDirectory, fallbackRoot: fallbackRoot)
-                    : textures.whiteTexture
-                let toonTexture = textures.toonTexture(for: material, model: model,
-                                                       baseDirectory: baseDirectory, fallbackRoot: fallbackRoot)
-                encoder.setFragmentTexture(baseTexture, index: 0)
-                encoder.setFragmentTexture(sphereTexture, index: 1)
-                encoder.setFragmentTexture(toonTexture, index: 2)
-                var uniforms = makeMaterialUniforms(document: document, materialIndex: materialIndex,
-                                                    transparent: true, flags: 0,
-                                                    texturePresent: settings.useTexture && material.textureIndex >= 0,
-                                                    spherePresent: material.sphereIndex >= 0 && settings.sphereMode != 0,
-                                                    toonPresent: settings.useToon)
-                encoder.setFragmentBytes(&uniforms, length: MemoryLayout<MMDMaterialUniforms>.stride, index: 1)
-                encoder.setCullMode(settings.doubleSided ? .none : .back)
-                encoder.drawIndexedPrimitives(type: .triangle,
-                                              indexCount: submesh.indexCount,
-                                              indexType: .uint32,
-                                              indexBuffer: mesh.indexBuffer,
-                                              indexBufferOffset: submesh.indexBufferOffset)
-            }
         }
 
         encodeAttachments(encoder, scene: scene, document: document,
