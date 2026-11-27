@@ -23,6 +23,10 @@ final class MMDTextureLibrary {
 
     private(set) var missingTextures: Set<String> = []
     private var loggedMissing: Set<String> = []
+    /// 多选一时记过一次就不再刷屏。
+    private var loggedAmbiguity: Set<String> = []
+    /// 上一次解析失败时发现的相近文件名，供 `recordMissing` 写进日志。
+    private var lastMissHint: String?
     var missingCount: Int { missingTextures.count }
     var missingTextureNames: [String] { missingTextures.sorted() }
 
@@ -109,7 +113,9 @@ final class MMDTextureLibrary {
         let key = "\(baseDirectory?.path ?? "")|\(fallbackRoot?.path ?? "")|\(path.lowercased())"
         guard loggedMissing.insert(key).inserted else { return }
         let roots = [baseDirectory?.path, fallbackRoot?.path].compactMap { $0 }.joined(separator: " | ")
-        MMDLog.shared.warning("Missing texture: \(path); roots=\(roots)")
+        let hint = lastMissHint.map { "; \($0)" } ?? ""
+        lastMissHint = nil
+        MMDLog.shared.warning("Missing texture: \(path); roots=\(roots)\(hint)")
     }
 
     private func resolveURL(path: String, baseDirectory: URL?, fallbackRoot: URL?) -> URL? {
@@ -122,6 +128,7 @@ final class MMDTextureLibrary {
         }
         guard !normalized.isEmpty else { return nil }
 
+        lastMissHint = nil
         let roots = [baseDirectory, fallbackRoot].compactMap { $0 }
         for root in roots {
             if let url = resolve(path: normalized, in: root) { return url }
@@ -171,54 +178,102 @@ final class MMDTextureLibrary {
             if let exact = index[variant] { return exact }
         }
 
-        // 只有当结果唯一时才按后缀匹配。
+        // 下面三层都是「名字完全对得上」的匹配，逐层放宽：
+        // 后缀（带子目录）→ 主干（换了扩展名）→ 文件名。
+        //
+        // 命中多个时不再一律放弃。一个导入包里放两个形态、各一个文件夹的模型
+        // 很常见，两边的贴图往往同名（各有一张 31.bmp），PMX 里写的又常常只是
+        // 文件名本身。以前遇到这种就报「缺贴图」，下摆、翅膀整片变白。现在按
+        // 「离 PMX 最近」挑一个：先看是否在同一子目录下，再看层级深浅。
+        // 注意仍然不做模糊匹配 —— 只是在一个精确命中的集合里选最近的。
+        var suffixHits: [URL] = []
         for variant in variants {
-            let suffixMatches = index.compactMap { key, url -> (Int, URL)? in
-                guard key.hasSuffix("/" + variant) || key.hasSuffix(variant) else { return nil }
-                return (key.count, url)
-            }.sorted { $0.0 < $1.0 }
-            if suffixMatches.count == 1 { return suffixMatches[0].1 }
+            for (key, url) in index where key == variant || key.hasSuffix("/" + variant) {
+                if !suffixHits.contains(url) { suffixHits.append(url) }
+            }
         }
+        if let picked = closest(suffixHits, to: baseDirectory, referenced: relative) { return picked }
 
         // 有些导出器引用 texture.png，包里却只有
-        // texture.jpg / texture.dds。最后一步再按
-        // 常见图片扩展名匹配文件名主干。
+        // texture.jpg / texture.dds。再按文件名主干匹配。
         let stem = (relative as NSString).deletingPathExtension
+        var stemHits: [URL] = []
         for variant in pathVariants(stem) {
-            let stemMatches = index.compactMap { key, url -> (Int, URL)? in
+            for (key, url) in index {
                 let keyStem = (key as NSString).deletingPathExtension
-                guard keyStem == variant || keyStem.hasSuffix("/" + variant) else { return nil }
-                return (key.count, url)
-            }.sorted { $0.0 < $1.0 }
-            if stemMatches.count == 1 { return stemMatches[0].1 }
+                guard keyStem == variant || keyStem.hasSuffix("/" + variant) else { continue }
+                if !stemHits.contains(url) { stemHits.append(url) }
+            }
         }
+        if let picked = closest(stemHits, to: baseDirectory, referenced: relative) { return picked }
 
         let lastComponent = (relative as NSString).lastPathComponent.lowercased()
-        let basenameMatches: [(key: String, value: URL)] = index.filter {
-            $0.key == lastComponent || $0.key.hasSuffix("/" + lastComponent)
+        var basenameHits: [URL] = []
+        for (key, url) in index where key == lastComponent || key.hasSuffix("/" + lastComponent) {
+            if !basenameHits.contains(url) { basenameHits.append(url) }
         }
-        if basenameMatches.count == 1 { return basenameMatches[0].value }
+        if let picked = closest(basenameHits, to: baseDirectory, referenced: relative) { return picked }
 
-        // 不要靠「差不多」的名字去猜。贴错贴图比
-        // 明确提示缺贴图更糟，之前的乱猜
-        // 正是同级模型互相串图的来源。
+        // 真的没有。把「名字相近的候选」记下来，日志里就能分清
+        // 「包里根本没有这张图」和「名字写法对不上」。
+        lastMissHint = nearestNames(to: relative, in: index)
         return nil
     }
 
-    private static func searchStem(_ name: String) -> String {
-        let stem = (name as NSString).deletingPathExtension
-        return stem.lowercased()
-            .replacingOccurrences(of: " ", with: "")
-            .replacingOccurrences(of: "_", with: "")
-            .replacingOccurrences(of: "-", with: "")
-            .precomposedStringWithCanonicalMapping
+    /// 在精确命中的候选里挑「离 PMX 最近」的一个。
+    ///
+    /// 排序依据依次是：是否落在和 PMX 同一个子目录下、层级深浅、字典序。
+    /// 只有唯一候选时不写日志；多选一时记一条警告，方便回头核对
+    /// 有没有串图。
+    private func closest(_ urls: [URL], to baseDirectory: URL, referenced: String) -> URL? {
+        guard !urls.isEmpty else { return nil }
+        if urls.count == 1 { return urls[0] }
+
+        let root = baseDirectory.standardizedFileURL.path
+        let pmxParent = baseDirectory.lastPathComponent.lowercased()
+
+        func rank(_ url: URL) -> (Int, Int, String) {
+            let path = url.standardizedFileURL.path
+            let relative = path.hasPrefix(root + "/") ? String(path.dropFirst(root.count + 1)) : url.lastPathComponent
+            let parts = relative.split(separator: "/")
+            let sameSubtree = parts.count > 1 && String(parts[0]).lowercased() == pmxParent ? 0 : 1
+            return (sameSubtree, parts.count, relative)
+        }
+
+        let picked = urls.min { rank($0) < rank($1) }
+        if let picked {
+            let key = "\(referenced.lowercased())|\(urls.count)"
+            if loggedAmbiguity.insert(key).inserted {
+                MMDLog.shared.warning("Ambiguous texture: \(referenced) → \(picked.lastPathComponent) (\(urls.count) 个同名候选)")
+            }
+        }
+        return picked
     }
 
+    /// 日志里附几个名字相近的文件，用来判断是「没有这张图」还是「写法不同」。
+    private func nearestNames(to referenced: String, in index: [String: URL]) -> String {
+        let lower = referenced.lowercased()
+        let stem = (lower as NSString).deletingPathExtension
+        let candidates = index.keys.filter { key in
+            key.hasSuffix(lower) || (key as NSString).deletingPathExtension.hasSuffix(stem)
+                || key.contains((stem as NSString).lastPathComponent)
+        }
+        guard !candidates.isEmpty else { return "indexed=\(index.count)" }
+        let listed = candidates.sorted { $0.count < $1.count }.prefix(3).joined(separator: ", ")
+        return "near=[\(listed)] indexed=\(index.count)"
+    }
+
+    /// 查询侧的名字变体。
+    ///
+    /// 除了大小写与 Unicode 合成形式，还要试一次兼容映射：日文环境下做出来的
+    /// 模型偶尔把数字、字母写成全角（`３１.ｂｍｐ`），NFKC 之后才和磁盘上的
+    /// 半角写法对得上。
     private func pathVariants(_ path: String) -> [String] {
         let lower = path.lowercased()
         let precomposed = lower.precomposedStringWithCanonicalMapping
         let decomposed = lower.decomposedStringWithCanonicalMapping
-        return Array(Set([lower, precomposed, decomposed]))
+        let compatible = lower.precomposedStringWithCompatibilityMapping
+        return Array(Set([lower, precomposed, decomposed, compatible]))
     }
 
     private func directoryIndex(for baseDirectory: URL) -> [String: URL] {
@@ -234,7 +289,9 @@ final class MMDTextureLibrary {
                 let path = url.standardizedFileURL.path
                 let relative = path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : url.lastPathComponent
                 for alias in MMDZipArchive.filenameAliases(relative) {
-                    aliasMap[alias.lowercased(), default: []].insert(url)
+                    for key in aliasKeys(alias) {
+                        aliasMap[key, default: []].insert(url)
+                    }
                 }
             }
         }
@@ -249,6 +306,22 @@ final class MMDTextureLibrary {
         return index
     }
 
+
+    /// 一个磁盘文件名要登记的全部查找键：小写、两种 Unicode 形式、兼容映射，
+    /// 以及去掉首尾空格/结尾点的版本（Windows 允许、拷贝工具偶尔会留下）。
+    private func aliasKeys(_ name: String) -> [String] {
+        let lower = name.lowercased()
+        let trimmed = lower.trimmingCharacters(in: .whitespaces)
+        let withoutTrailingDots = trimmed.replacingOccurrences(of: "\\.+$", with: "",
+                                                               options: .regularExpression)
+        var keys: Set<String> = [lower]
+        for value in [lower, trimmed, withoutTrailingDots] {
+            keys.insert(value.precomposedStringWithCanonicalMapping)
+            keys.insert(value.decomposedStringWithCanonicalMapping)
+            keys.insert(value.precomposedStringWithCompatibilityMapping)
+        }
+        return Array(keys)
+    }
 
     // MARK: - 贴图创建
 
