@@ -9,10 +9,10 @@ import Foundation
 import CoreFoundation
 import simd
 
-/// VPD (Vocaloid Pose Data) reader. A VPD stores a static pose as bone
-/// name + local translation + quaternion, optionally followed by morph
-/// weights. MMD also uses `.vac` for accessory transforms; this parser does
-/// not pretend to read that separate format.
+/// VPD（Vocaloid Pose Data）读取器。VPD 把静态姿势存成骨骼名
+/// + 局部平移 + 四元数，后面可选地跟 Morph 权重。
+/// MMD 还用 `.vac` 存挂件变换；这个解析器
+/// 不假装能读那种格式。
 struct MMDPoseBone {
     var name: String
     var position: SIMD3<Float>
@@ -48,8 +48,8 @@ enum MMDPoseParser {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         var index = 0
-        // Headers in the wild: "Vocaloid Pose Data file (VPD)" and
-        // "Vocaloid Pose Data file". Both are optional for tolerant import.
+        // 实际文件头有两种："Vocaloid Pose Data file (VPD)" 和
+        // "Vocaloid Pose Data file"。宽容导入下两种都可以没有。
         while index < rawLines.count,
               rawLines[index].lowercased().contains("vocaloid pose data") {
             index += 1
@@ -87,8 +87,8 @@ enum MMDPoseParser {
             }
             var position = SIMD3<Float>(values[0], values[1], -values[2])
             position = sanitize(position)
-            // Convert MMD's left-handed quaternion to the renderer's
-            // right-handed space: negate X and Y rotation components.
+            // 把 MMD 的左手四元数转成渲染器的右手空间：
+            // 取反 X 与 Y 的旋转分量。
             var quaternion = simd_quatf(ix: -values[3], iy: -values[4], iz: values[5], r: values[6])
             if simd_length(quaternion.vector) < 0.0001 {
                 quaternion = mmdIdentityQuaternion

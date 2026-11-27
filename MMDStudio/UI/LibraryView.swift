@@ -26,11 +26,11 @@ struct LibraryView: View {
     @State private var pendingDelete: [MMDModelEntry] = []
     @State private var showLogs = false
     @State private var showStorage = false
-    /// Presented as a full-screen cover instead of a navigation push: the
-    /// canvas claims one-finger horizontal drags for orbiting, and a drag that
-    /// started at the left edge was being consumed by the navigation stack's
-    /// interactive pop, throwing the user back to the list mid-rotation. A
-    /// cover has no pop gesture at all, so the only way out is the button.
+    /// 用全屏 cover 呈现，而不是导航 push：
+    /// 画布把单指横拖用于环绕，而从左边缘起的拖拽
+    /// 会被导航栈的交互式返回吃掉，
+    /// 用户转到一半就被扔回列表。cover
+    /// 根本没有返回手势，唯一的出口是按钮。
     @State private var openedEntry: MMDModelEntry?
 
     private var selectedEntries: [MMDModelEntry] {
@@ -43,8 +43,8 @@ struct LibraryView: View {
         let entries: [MMDModelEntry]
     }
 
-    /// One folder per character. A weapon or prop imported next to a character
-    /// is listed under that character's name instead of floating on its own.
+    /// 每个角色一个目录。和角色一起导入的武器或挂件
+    /// 列在该角色名下，不单独浮在外面。
     private var characterSections: [LibrarySection] {
         var order: [String] = []
         var map: [String: [MMDModelEntry]] = [:]
@@ -144,8 +144,8 @@ struct LibraryView: View {
                     Section {
                         ForEach(section.entries) { modelRow($0) }
                     } header: {
-                        // A lone character would otherwise repeat its own name
-                        // as both the folder and the only row.
+                        // 否则单个角色会把自己的名字重复成
+                        // 目录名和唯一一行。
                         if section.entries.count > 1 || section.title != section.entries.first?.rowName {
                             HStack(spacing: 6) {
                                 Label(section.title, systemImage: "folder")
@@ -322,8 +322,8 @@ struct LibraryView: View {
         }
     }
 
-    /// Archive folders are named `3.1蕾米埃尔_by_绝区零_<hash>`; the raw
-    /// string pushes everything else out of the row, so show the cleaned stem.
+    /// 压缩包目录名是 `3.1蕾米埃尔_by_绝区零_<hash>`；原样
+    /// 显示会把其他内容挤出这一行，所以显示净化后的主干。
     private func rowSubtitle(_ entry: MMDModelEntry) -> String {
         let cleaned = MMDCharacterNaming.clean(entry.folderName)
         let name = cleaned.isEmpty ? entry.folderName : cleaned

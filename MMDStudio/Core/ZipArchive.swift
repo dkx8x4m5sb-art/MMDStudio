@@ -10,12 +10,12 @@ import Foundation
 import CoreFoundation
 #endif
 
-/// A small, dependency-free ZIP reader used by the model importer.
+/// 模型导入器用的小型、无依赖 ZIP 读取器。
 ///
-/// It supports the two compression methods that are produced by the Files app,
-/// Finder, `zip`, and most MMD model archives: stored (0) and deflate (8).
-/// ZIP64 central-directory records are accepted as well. Paths are sanitized
-/// before extraction so an archive can never escape the destination folder.
+/// 支持 Files App、Finder、`zip` 及多数 MMD 模型包
+/// 会产生的两种压缩方式：存储（0）与 deflate（8）。
+/// 也接受 ZIP64 中央目录记录。路径在解压前
+/// 会做净化，压缩包永远逃不出目标目录。
 enum MMDZipArchive {
 
     enum ZipError: LocalizedError {
@@ -43,16 +43,16 @@ enum MMDZipArchive {
         var uncompressedSize: UInt64
         var localHeaderOffset: UInt64
         var isDirectory: Bool
-        /// Set only by the local-header recovery pass, where the payload end
-        /// has to be guessed from the next signature instead of a size field.
+        /// 只由本地文件头恢复那一遍设置：此时负载结束位置
+        /// 只能从下一个签名去猜，没有大小字段可用。
         var dataEnd: Int? = nil
-        /// Streaming archives write the CRC into a trailing descriptor, so the
-        /// local header may still hold 0 and the check must be skipped.
+        /// 流式压缩包把 CRC 写在尾随描述符里，本地文件头
+        /// 可能仍是 0，这项校验必须跳过。
         var skipCRC = false
     }
 
-    /// Returns the names that could not be decoded, so the caller can log them
-    /// instead of failing an otherwise usable import.
+    /// 返回无法解码的名字，调用方可以记日志，
+    /// 而不是让一次本来能用的导入直接失败。
     @discardableResult
     static func extract(url: URL, to destination: URL) throws -> [String] {
         let declared = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
@@ -63,10 +63,10 @@ enum MMDZipArchive {
             throw ZipError.invalidArchive("无法读取文件（\(declared) 字节）：\(error.localizedDescription)。" +
                                           "如果文件在 iCloud 里，请先点开下载完成再导入")
         }
-        // iCloud keeps a placeholder until the file is downloaded; reading it
-        // then yields a short buffer and looks exactly like a corrupt ZIP.
-        // Only a short read is evidence — a mapped file may legitimately
-        // report a smaller count than the on-disk allocation.
+        // iCloud 在文件下载完成前只留占位符；此时读取
+        // 得到的是短缓冲，看起来和损坏的 ZIP 一模一样。
+        // 只有「短读」才算证据 —— 映射文件读到的数量
+        // 小于磁盘分配是合法的。
         if declared > 0, data.count < declared {
             throw ZipError.invalidArchive("只读到 \(data.count)/\(declared) 字节，文件可能还在 iCloud 下载中，请等下载完成再试")
         }
@@ -84,11 +84,11 @@ enum MMDZipArchive {
         do {
             entries = try readCentralDirectory(bytes)
         } catch {
-            // No readable end-of-central-directory: either the file is not a
-            // ZIP at all, or it is a streaming archive whose trailer was lost.
-            // Walking the local headers recovers everything the payload still
-            // holds, which is the difference between "导入失败" and a usable
-            // model for a truncated download.
+            // 没有可读的中央目录结尾：要么根本不是
+            // ZIP，要么是尾部丢失的流式包。
+            // 走一遍本地文件头，能把负载里还剩的东西全部捞回来，
+            // 这就是「导入失败」和「下载被截断但仍能用」
+            // 之间的差别。
             if let recovered = try? scanLocalHeaders(bytes), !recovered.isEmpty {
                 entries = recovered
             } else if let hint = formatHint(bytes) {
@@ -121,9 +121,9 @@ enum MMDZipArchive {
                     throw ZipError.checksumMismatch(relativePath)
                 }
             } catch {
-                // A single bad record must not cost the whole archive: the PMX
-                // and its textures are usually intact while one trailing
-                // thumbnail is not. A fully broken archive still fails below.
+                // 一条坏记录不能让整个包作废：PMX 和贴图通常
+                // 完好，坏的只是末尾一张缩略图。
+                // 整包彻底损坏的情况仍在下面报错。
                 skipped.append(entry.name)
                 lastFailure = error
                 continue
@@ -136,13 +136,13 @@ enum MMDZipArchive {
         return skipped
     }
 
-    // MARK: - Local header recovery
+    // MARK: - 本地文件头恢复
 
-    /// Rebuild the entry list from the `PK\x03\x04` records alone. Streaming
-    /// writers (some phone archivers and "保存到文件" flows) only emit local
-    /// headers plus a data descriptor, and a download cut short loses the
-    /// central directory entirely — both produce the same "找不到中央目录结尾"
-    /// failure on a perfectly readable model.
+    /// 只凭 `PK\x03\x04` 记录重建条目表。流式
+    /// 写入器（某些手机压缩工具和「保存到文件」流程）只写本地
+    /// 文件头加数据描述符，下载被截断则中央目录整个丢失 ——
+    /// 两者都会在一个完全可读的模型上
+    /// 报「找不到中央目录结尾」。
     private static func scanLocalHeaders(_ bytes: [UInt8]) throws -> [Entry] {
         var entries = [Entry]()
         var cursor = 0
@@ -166,9 +166,9 @@ enum MMDZipArchive {
             }
             let nameBytes = Array(bytes[nameStart..<(nameStart + nameLength)])
             let name = decodeName(nameBytes, flags: flags)
-            // A real entry name is readable text. Random payload bytes that
-            // happen to spell PK\x03\x04 almost never are, so this filter is
-            // what keeps a false signature from derailing the scan.
+            // 真正的条目名是可读文本。负载里随机字节
+            // 恰好拼出 PK\x03\x04 的概率极低，
+            // 这道过滤就是防止假签名把扫描带偏。
             guard !name.isEmpty,
                   !name.unicodeScalars.contains(where: {
                       CharacterSet.controlCharacters.contains($0) || $0.value == 0xFFFD
@@ -181,9 +181,9 @@ enum MMDZipArchive {
             if compressed > 0, compressed < UInt64(bytes.count) {
                 dataEnd = dataStart + Int(compressed)
             } else if method == 8, hasDescriptor {
-                // Size lives in the trailing descriptor we cannot trust after a
-                // truncation. Raw deflate stops at its final block, so a probe
-                // decode tells us exactly how many bytes this entry owns.
+                // 大小写在尾随描述符里，截断后不可信。
+                // 原始 deflate 在最后一个块结束，
+                // 试解一次就能准确知道这一条占多少字节。
                 let probe = DeflateInflater(input: Array(bytes[dataStart...]), expectedSize: 0)
                 if (try? probe.inflate()) != nil, probe.consumedBytes > 0 {
                     dataEnd = dataStart + probe.consumedBytes
@@ -203,9 +203,9 @@ enum MMDZipArchive {
                                  isDirectory: name.hasSuffix("/") || name.hasSuffix("\\"),
                                  dataEnd: dataEnd,
                                  skipCRC: crc == 0))
-            // Skip the payload (and its optional descriptor) before looking
-            // for the next signature; without this, compressed data that
-            // contains 0x04034b50 would be parsed as a bogus entry.
+            // 找下一个签名前先跳过负载（以及可选的描述符）；
+            // 否则压缩数据里含 0x04034b50 时，
+            // 会被当成一条假条目解析。
             var next = dataEnd ?? dataStart
             if hasDescriptor, next + 4 <= bytes.count, readUInt32(bytes, next) == 0x0807_4B50 {
                 next += 16
@@ -216,9 +216,9 @@ enum MMDZipArchive {
         return entries
     }
 
-    /// Explain what the file actually is. `.zip` is only a suffix; RAR and 7z
-    /// archives are routinely renamed and cannot be opened on iOS without a
-    /// third-party library, so saying so beats a generic corruption message.
+    /// 说清楚文件到底是什么。`.zip` 只是后缀；RAR 和 7z
+    /// 经常被改名，iOS 上没有第三方库打不开，
+    /// 明说比一句笼统的「文件损坏」有用。
     private static func formatHint(_ bytes: [UInt8]) -> String? {
         func matches(_ signature: [UInt8], at offset: Int = 0) -> Bool {
             guard bytes.count >= offset + signature.count else { return false }
@@ -248,7 +248,7 @@ enum MMDZipArchive {
         return nil
     }
 
-    // MARK: - Central directory
+    // MARK: - 中央目录
 
     private static func readCentralDirectory(_ bytes: [UInt8]) throws -> [Entry] {
         var endOffset = -1
@@ -267,7 +267,7 @@ enum MMDZipArchive {
         var centralSize = UInt64(readUInt32(bytes, endOffset + 12))
         var centralOffset = UInt64(readUInt32(bytes, endOffset + 16))
 
-        // ZIP64 locator sits immediately before the classic EOCD record.
+        // ZIP64 定位器紧挨着经典 EOCD 记录之前。
         if endOffset >= 20, readUInt32(bytes, endOffset - 20) == 0x0706_4B50 {
             let zip64Offset = readUInt64(bytes, endOffset - 20 + 8)
             guard zip64Offset < UInt64(bytes.count),
@@ -317,7 +317,7 @@ enum MMDZipArchive {
             let isDirectory = name.hasSuffix("/") || name.hasSuffix("\\")
                 || (externalAttributes & 0x10) != 0
 
-            // Parse the Zip64 extra field when any 32-bit value was saturated.
+            // 任一 32 位值饱和时，解析 Zip64 扩展字段。
             if uncompressedSize == 0xFFFF_FFFF || compressedSize == 0xFFFF_FFFF
                 || localHeaderOffset == 0xFFFF_FFFF || diskStart == 0xFFFF {
                 var extraCursor = extraStart
@@ -359,7 +359,7 @@ enum MMDZipArchive {
         return entries
     }
 
-    // MARK: - Payload
+    // MARK: - 负载
 
     private static func extractPayload(entry: Entry, bytes: [UInt8]) throws -> Data {
         guard entry.flags & 0x0001 == 0, entry.flags & 0x0040 == 0 else {
@@ -398,9 +398,9 @@ enum MMDZipArchive {
         }
     }
 
-    /// Windows CP932 / GBK / Big5 are common in MMD archives created on
-    /// Japanese or Chinese Windows. Foundation's generic .shiftJIS does not
-    /// cover every CP932 extension, so use the DOS encodings explicitly.
+    /// Windows CP932 / GBK / Big5 在日文或中文 Windows
+    /// 打的 MMD 包里很常见。Foundation 的通用 .shiftJIS
+    /// 并不覆盖全部 CP932 扩展，所以显式使用 DOS 编码。
     private static let cp932Encoding = String.Encoding(
         rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(0x0420)))
     private static let gbkEncoding = String.Encoding(
@@ -414,9 +414,9 @@ enum MMDZipArchive {
             return text
         }
 
-        // Do not return the first decodable string blindly: CP1252 and Latin-1
-        // decode almost every byte sequence, which turns Chinese/Japanese
-        // names into mojibake such as "ÎaäÆ÷2". Score candidates instead.
+        // 不要盲取第一个能解码的字符串：CP1252 和 Latin-1
+        // 几乎能解任何字节序列，中日文名字会变成
+        // 「ÎaäÆ÷2」这种乱码。改为给候选打分。
         let candidates: [(String.Encoding, String)] = [
             (.utf8, "utf8"),
             (cp932Encoding, "cp932"),
@@ -462,8 +462,8 @@ enum MMDZipArchive {
         }
     }
 
-    /// Some archives have already been damaged by an earlier CP1252/Latin-1
-    /// extraction. Reverse that mapping and try the CJK encodings again.
+    /// 有些包已被早先的 CP1252/Latin-1 解压弄坏。
+    /// 把那个映射倒回去，再试一遍 CJK 编码。
     static func repairedFilename(_ rawName: String) -> String? {
         let name = rawName.precomposedStringWithCanonicalMapping
         let candidates: [String.Encoding] = [.windowsCP1252, .isoLatin1]
@@ -487,9 +487,9 @@ enum MMDZipArchive {
             values.append(repaired.precomposedStringWithCanonicalMapping)
             values.append(repaired.decomposedStringWithCanonicalMapping)
         }
-        // A damaged archive usually corrupts every path component, not the
-        // whole path as one string. Repair the folder and file names
-        // separately so "Texture/脸.png" still resolves after import.
+        // 损坏的压缩包通常把每个路径分量都弄坏，而不是
+        // 整条路径当成一个字符串。目录名和文件名分开
+        // 修复，导入后 "Texture/脸.png" 才能解析到。
         let components = name.split(separator: "/", omittingEmptySubsequences: false).map { component -> String in
             let value = String(component)
             return repairedFilename(value) ?? value
@@ -498,10 +498,10 @@ enum MMDZipArchive {
         values.append(repairedPath)
         values.append(repairedPath.precomposedStringWithCanonicalMapping)
         values.append(repairedPath.decomposedStringWithCanonicalMapping)
-        // Shift-JIS archives opened by a GBK-oriented tool (or the reverse)
-        // produce names like 懱.png where the PMX asks for 体.png. Re-encode
-        // each component through the common CJK code pages so the real file
-        // becomes reachable under the spelling the model actually uses.
+        // 用 GBK 工具打开 Shift-JIS 压缩包（或反过来），
+        // 会得到 懱.png 这种名字，而 PMX 要的是 体.png。把每个
+        // 分量按常见 CJK 代码页重新编码，
+        // 真实文件才能用模型实际写的拼法找到。
         for variant in reencodedVariants(repairedPath) {
             values.append(variant)
             values.append(variant.precomposedStringWithCanonicalMapping)
@@ -515,9 +515,9 @@ enum MMDZipArchive {
         return Array(Set(values))
     }
 
-    /// Names produced when a path is encoded in one code page and decoded in
-    /// another. Only used as lookup aliases; a caller must still confirm that
-    /// the target file exists.
+    /// 路径用一种代码页编码、用另一种解码时产生的名字。
+    /// 只当作查找别名使用；
+    /// 调用方仍要确认目标文件确实存在。
     static func reencodedVariants(_ rawName: String) -> [String] {
         let name = rawName.precomposedStringWithCanonicalMapping
         let encodings: [String.Encoding] = [cp932Encoding, gbkEncoding, big5Encoding, .utf8]
@@ -527,8 +527,8 @@ enum MMDZipArchive {
             for target in encodings where target != source {
                 guard let candidate = String(data: data, encoding: target),
                       candidate != name else { continue }
-                // Drop control characters and replacement glyphs; those
-                // conversions are noise rather than recoverable filenames.
+                // 去掉控制字符与替换字符；那些转换出来的是噪声，
+                // 不是能恢复的文件名。
                 guard !candidate.unicodeScalars.contains(where: {
                     CharacterSet.controlCharacters.contains($0) || $0.value == 0xFFFD
                 }) else { continue }
@@ -551,7 +551,7 @@ enum MMDZipArchive {
         return components.joined(separator: "/")
     }
 
-    // MARK: - Byte helpers
+    // MARK: - 字节辅助
 
     private static func readUInt16(_ bytes: [UInt8], _ offset: Int) -> UInt16 {
         UInt16(bytes[offset]) | UInt16(bytes[offset + 1]) << 8
@@ -587,7 +587,7 @@ enum MMDZipArchive {
     }()
 }
 
-// MARK: - Raw deflate
+// MARK: - 原始 deflate
 
 private final class DeflateInflater {
 
@@ -595,9 +595,9 @@ private final class DeflateInflater {
     private let expectedSize: Int
     private var bitPosition = 0
     private var output = [UInt8]()
-    /// Bytes of the input that belonged to the deflate stream. A streaming
-    /// entry has no size in its local header, so this is the only way to know
-    /// where its payload ends and the next record begins.
+    /// 输入中属于 deflate 流的字节数。流式条目的
+    /// 本地文件头没有大小，这是唯一能知道
+    /// 负载到哪结束、下一条记录从哪开始的办法。
     private(set) var consumedBytes = 0
 
     init(input: [UInt8], expectedSize: Int) {

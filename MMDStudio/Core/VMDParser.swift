@@ -97,7 +97,7 @@ struct VMDMotion {
             return (upper.position, upper.rotation)
         }
         let t = max(0, min(1, (frame - Float(lower.frame)) / Float(upper.frame - lower.frame)))
-        // MMD applies the curve stored on the arriving keyframe.
+        // MMD 采用到达关键帧上存的曲线。
         let tx = upper.curveX.value(at: t)
         let ty = upper.curveY.value(at: t)
         let tz = upper.curveZ.value(at: t)
@@ -132,8 +132,8 @@ struct VMDMotion {
         return lower.weight + (upper.weight - lower.weight) * t
     }
 
-    /// Computes a camera pose using MMD's convention: the eye sits on a sphere of
-    /// radius `distance` around the look-at target, rotated by the camera Euler angles.
+    /// 按 MMD 的约定计算相机姿势：视点落在以目标为
+    /// 球心、半径 `distance` 的球面上，再按相机欧拉角旋转。
     static func evaluateCamera(keys: [VMDCameraKeyframe], frame: Float) -> VMDCameraPose? {
         guard !keys.isEmpty else { return nil }
         if keys.count == 1 { return pose(from: keys[0]) }
@@ -151,7 +151,7 @@ struct VMDMotion {
         }
         if !found { return pose(from: keys[keys.count - 1]) }
         if upper.frame <= lower.frame { return pose(from: upper) }
-        // One-frame gaps are camera cuts, not a one-frame interpolation ramp.
+        // 差一帧是镜头切换，不是一帧的插值斜坡。
         if upper.frame - lower.frame <= 1 { return pose(from: upper) }
         let t = max(0, min(1, (frame - Float(lower.frame)) / Float(upper.frame - lower.frame)))
 
@@ -182,7 +182,7 @@ struct VMDMotion {
     }
 
     private static func makePose(target: SIMD3<Float>, rotation: SIMD3<Float>, distance: Float, fov: Float) -> VMDCameraPose {
-        // MMD is left-handed, so build the offset there and mirror Z into our space.
+        // MMD 是左手系，偏移在那里算好再把 Z 镜像进我们的空间。
         let q = quatFromEuler(rotation)
         let safeDistance = max(0.1, abs(distance))
         let offsetLH = q.act(SIMD3<Float>(0, 0, -safeDistance))
@@ -198,8 +198,8 @@ extension PMXByteReader {
         let chunk = Array(bytes[offset..<(offset + length)])
         offset += length
         var trimmed = Array(chunk.prefix { $0 != 0 })
-        // VMD truncates Shift-JIS names at a fixed byte boundary. A trailing
-        // half-character would otherwise make the whole name decode as nil.
+        // VMD 把 Shift-JIS 名字截在固定字节边界上。末尾的
+        // 半个字符会让整个名字解码成 nil。
         while !trimmed.isEmpty {
             if let text = String(data: Data(trimmed), encoding: encoding) {
                 return text
@@ -212,9 +212,9 @@ extension PMXByteReader {
 
 final class VMDParser {
 
-    /// VMD frame numbers are 32-bit. A malformed or partially written file
-    /// can contain multi-billion-frame values; cap the accepted timeline at
-    /// one hour so the scrubber stays usable.
+    /// VMD 帧号是 32 位。畸形或写到一半的文件
+    /// 可能带几十亿帧的值；接受的时间轴上限压到
+    /// 一小时，进度条才还能用。
     static let saneFrameLimit = 108_000
 
     private var reader: PMXByteReader
@@ -258,7 +258,7 @@ final class VMDParser {
                 let qy = try reader.readFloat("四元数 Y")
                 let qz = try reader.readFloat("四元数 Z")
                 let qw = try reader.readFloat("四元数 W")
-                // Mirror the left-handed rotation into right-handed space.
+                // 把左手旋转镜像进右手空间。
                 position.z = -position.z
                 let rotation = quatNormalize(simd_quatf(ix: -qx, iy: -qy, iz: qz, r: qw))
     
@@ -285,8 +285,8 @@ final class VMDParser {
             }
         }
 
-        // A truncated experimental VMD should still be usable for the
-        // frames that were written successfully.
+        // 截断的实验性 VMD 仍应能用上
+        // 成功写入的那些帧。
         if vmdTruncated {
             let partialTracks = boneTracks.values.map { track -> VMDBoneTrack in
                 var sorted = track
@@ -336,7 +336,7 @@ final class VMDParser {
                 let rx = try reader.readFloat("相机 X 旋转")
                 let ry = try reader.readFloat("相机 Y 旋转")
                 let rz = try reader.readFloat("相机 Z 旋转")
-                // MMD camera interpolation is 24 bytes: six channels of x1, x2, y1, y2.
+                // MMD 相机插值 24 字节：x1、x2、y1、y2 六个通道。
                 try reader.require(24, "相机插值")
                 let offset = reader.offset
                 let bytes = Array(reader.bytes[offset..<(offset + 24)])
@@ -350,10 +350,10 @@ final class VMDParser {
                 let fov = try reader.readUInt32("相机 FOV")
                 let perspective = try reader.readUInt8("相机透视标志")
                 cameraKeys.append(VMDCameraKeyframe(frame: frame, distance: distance, target: target,
-                                                    // MMD mirrors Z between left/right handed
-                                                    // camera Euler angles; roll is kept for
-                                                    // future use even though the renderer uses
-                                                    // a stable Y-up view matrix.
+                                                    // MMD 在左右手相机欧拉角之间镜像 Z；
+                                                    // roll 仍然保留以备将来使用，
+                                                    // 尽管渲染器用的是
+                                                    // 稳定的 Y-up 视图矩阵。
                                                     rotation: SIMD3<Float>(rx, ry, -rz),
                                                     fov: Float(fov), curveX: curveX, curveY: curveY,
                                                     curveZ: curveZ, curveRotation: curveR,

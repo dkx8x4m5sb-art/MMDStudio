@@ -8,12 +8,12 @@
 import Combine
 import Foundation
 
-// MARK: - Snapshot types
+// MARK: - 快照类型
 
 struct MMDStorageFile: Identifiable, Hashable {
     let url: URL
-    /// Path relative to the scanned folder, so the list stays readable even
-    /// when an exported package has deeply nested texture directories.
+    /// 相对扫描目录的路径，这样导出的包里有
+    /// 层层嵌套的贴图目录时，列表仍然可读。
     let name: String
     let byteCount: Int64
     let modifiedAt: Date?
@@ -35,7 +35,7 @@ struct MMDStorageBucket: Identifiable, Hashable {
     let note: String
     let systemImage: String
     let group: MMDStorageGroup
-    /// Cached / disposable data. Only these buckets are wiped by "清理缓存".
+    /// 缓存 / 可丢弃数据。只有这些桶会被「清理缓存」清掉。
     let isCache: Bool
     let roots: [URL]
     var files: [MMDStorageFile]
@@ -43,9 +43,9 @@ struct MMDStorageBucket: Identifiable, Hashable {
     var byteCount: Int64 { files.reduce(0) { $0 + $1.byteCount } }
 }
 
-/// One imported package folder inside `Documents/MMDModels`. The library is
-/// never bulk-cleared: packages are deleted one at a time because each one is
-/// a self-contained PMX + texture + motion set.
+/// `Documents/MMDModels` 里的一个导入包目录。模型库
+/// 从不整批清空：包是一个个删的，因为每个都是
+/// 自带 PMX + 贴图 + 动作的完整套装。
 struct MMDStoragePackage: Identifiable, Hashable {
     let url: URL
     let name: String
@@ -64,11 +64,11 @@ struct MMDStorageSnapshot {
     let scannedAt: Date
 }
 
-// MARK: - Scanner
+// MARK: - 扫描器
 
-/// Read-only inventory of everything the app writes to disk. All of it lives
-/// under Documents (visible in the Files app) or the app's own Caches/tmp, so
-/// sizes are computed from allocated bytes rather than logical file length.
+/// App 写到磁盘上的一切的只读清单。它们都在
+/// Documents（Files 里可见）或 App 自己的 Caches/tmp 下，
+/// 所以大小按实际分配字节算，而不是逻辑文件长度。
 enum MMDStorageScanner {
 
     static var documentsDirectory: URL {
@@ -178,7 +178,7 @@ enum MMDStorageScanner {
         ]
     }
 
-    // MARK: Scan
+    // MARK: 扫描
 
     static func scan() -> MMDStorageSnapshot {
         var buckets: [MMDStorageBucket] = []
@@ -201,7 +201,7 @@ enum MMDStorageScanner {
                                   scannedAt: Date())
     }
 
-    /// Every regular file under the given roots, newest first.
+    /// 给定根目录下的所有普通文件，最新的在前。
     static func files(in roots: [URL]) -> [MMDStorageFile] {
         let keys: Set<URLResourceKey> = [.isRegularFileKey,
                                          .totalFileAllocatedSizeKey,
@@ -287,7 +287,7 @@ enum MMDStorageScanner {
         return count
     }
 
-    /// Allocated size of a file or a whole folder tree.
+    /// 文件或整棵目录树的实际分配大小。
     static func size(of url: URL) -> Int64 {
         let keys: Set<URLResourceKey> = [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileSizeKey]
         if let values = try? url.resourceValues(forKeys: keys), values.isRegularFile == true {
@@ -315,11 +315,11 @@ enum MMDStorageScanner {
         return (free, capacity)
     }
 
-    // MARK: Cleanup
+    // MARK: 清理
 
-    /// Temporary data only: tmp, Caches, rolling logs and orphaned `-temp`
-    /// export files. Library, exports, recordings and the photo library are
-    /// untouched.
+    /// 只清临时数据：tmp、Caches、轮转日志和残留的
+    /// `-temp` 导出文件。模型库、导出、录制和相册
+    /// 一概不动。
     static func clearCaches() -> Int64 {
         var freed: Int64 = 0
         let logDirectory = studio("Logs")
@@ -332,9 +332,9 @@ enum MMDStorageScanner {
         return freed
     }
 
-    /// Log first, then wipe: the record is useful if anything below throws, and
-    /// clearing last leaves an empty log directory instead of a hundred-byte
-    /// file that makes the cache number look non-zero right after a purge.
+    /// 先写日志再清：下面若抛异常，这条记录还有用；
+    /// 最后清日志会留下一个空目录，
+    /// 而不是清完就出现的百字节文件把缓存数字撑成非零。
     private static func logDirectoryPurge() {
         MMDLog.shared.info("Storage cache purge requested")
         MMDLog.shared.clear()
@@ -355,8 +355,8 @@ enum MMDStorageScanner {
         return freed
     }
 
-    /// A cancelled or crashed video export can leave `<name>-temp.mp4` behind;
-    /// those are never meant to be kept.
+    /// 取消或崩溃的视频导出会留下 `<name>-temp.mp4`，
+    /// 这些从来不该保留。
     private static func removeLeftoverExports() -> Int64 {
         let directory = studio("Exports/Videos")
         guard let contents = try? FileManager.default.contentsOfDirectory(at: directory,
@@ -374,7 +374,7 @@ enum MMDStorageScanner {
         return freed
     }
 
-    /// Deletion guard: only files below the roots the app owns.
+    /// 删除保护：只动 App 自己根目录下的文件。
     static func isManaged(_ url: URL) -> Bool {
         let path = url.standardizedFileURL.path
         let roots = [libraryDirectory, studioDirectory, temporaryDirectory, cachesDirectory]
@@ -385,11 +385,11 @@ enum MMDStorageScanner {
     }
 }
 
-// MARK: - Monitor
+// MARK: - 监控
 
-/// Owns the scanned snapshot so both the overview and the per-folder lists
-/// read one consistent inventory. Scanning runs off the main thread: a library
-/// with a few thousand texture files would otherwise hitch the list.
+/// 持有扫描快照，概览和分类列表因此读到同一份
+/// 一致清单。扫描在主线程之外跑：
+/// 几千个贴图文件的库否则会把列表卡住。
 final class MMDStorageMonitor: ObservableObject {
 
     @Published private(set) var buckets: [MMDStorageBucket] = []
@@ -410,8 +410,8 @@ final class MMDStorageMonitor: ObservableObject {
     var cacheBytes: Int64 {
         buckets.filter(\.isCache).reduce(0) { $0 + $1.byteCount }
     }
-    /// Everything the app itself accounts for. Model library included, so the
-    /// big number matches what the user has to free to uninstall cleanly.
+    /// App 自己统计的全部占用。包含模型库，
+    /// 这个大数字才对得上用户想干净卸载要腾出的空间。
     var appBytes: Int64 { modelBytes + mediaBytes + assetBytes + cacheBytes }
 
     func reload() async {
@@ -419,9 +419,9 @@ final class MMDStorageMonitor: ObservableObject {
         let snapshot = await Task.detached(priority: .userInitiated) {
             MMDStorageScanner.scan()
         }.value
-        // A non-isolated async function resumes on the concurrent executor,
-        // not on the main thread. @Published must be touched on main or
-        // SwiftUI will trap on the next layout pass.
+        // 非隔离的 async 函数会在并发执行器上恢复，
+        // 不在主线程。@Published 必须在主线程改，
+        // 否则 SwiftUI 会在下一次布局时崩。
         await MainActor.run {
             self.buckets = snapshot.buckets
             self.packages = snapshot.packages

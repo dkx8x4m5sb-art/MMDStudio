@@ -25,9 +25,9 @@ final class MMDMesh {
     let boneIndicesBuffer: MTLBuffer
     let weightsBuffer: MTLBuffer
     let edgeScalesBuffer: MTLBuffer
-    /// Three float4 per vertex: (C, isSDEF), R0, R1. Uploaded for every model
-    /// so the vertex shader can branch on a single flag without a second
-    /// pipeline state.
+    /// 每顶点三个 float4：(C, isSDEF)、R0、R1。所有模型都上传，
+    /// 顶点着色器只看一个标志就能分支，
+    /// 不用第二套管线状态。
     let sdefBuffer: MTLBuffer
     let indexBuffer: MTLBuffer
     var subMeshes: [MMDSubMesh]
@@ -92,19 +92,19 @@ final class MMDMeshBuilder {
         }
 
         let positions = model.vertices.map { $0.position }
-        // Many game-ripped PMX files carry split per-face normals. A smooth
-        // realistic shader hides most of that, but a two/three-step toon ramp
-        // turns every triangle into a hard polygonal shadow. Weld coincident
-        // positions and average their normals for shading, while keeping the
-        // original hard normal when the averaged direction disagrees strongly.
+        // 很多游戏提取的 PMX 带逐面拆分法线。平滑的
+        // 写实着色能盖住大部分，但两三阶的卡通 ramp
+        // 会把每个三角形都变成一块硬多边形阴影。
+        // 合并重合位置并平均法线用于着色，
+        // 平均方向严重不一致时保留原来的硬法线。
         let normals = Self.weldedShadingNormals(model.vertices)
         let uvs = model.vertices.map { vertex -> SIMD2<Float> in
             flipV ? SIMD2<Float>(vertex.uv.x, 1 - vertex.uv.y) : vertex.uv
         }
-        // Defensive sanitation: some converted models ship bone indices past
-        // the palette or weights that do not sum to 1. Reading those writes
-        // garbage transforms (parts flying off) and unnormalised weights stretch
-        // textures. Clamp indices and normalise the weight sum.
+        // 防御性清洗：一些转换模型的骨骼索引超出
+        // palette，权重之和也不是 1。读进去会写出
+        // 垃圾变换（部件飞走），未归一化的权重会拉伸
+        // 贴图。夹取索引，归一化权重和。
         let paletteCount = UInt32(max(1, model.bones.count))
         let boneIndices = model.vertices.map { vertex -> SIMD4<UInt32> in
             let index = vertex.boneIndices
@@ -143,9 +143,9 @@ final class MMDMeshBuilder {
             throw MMDLoadError.invalidData("模型没有面数据")
         }
 
-        // PMX uses a left-handed coordinate system and several exporters disagree
-        // about triangle winding. Flip triangles that face away from the vertex
-        // normals, then detect the winding Metal should treat as front-facing.
+        // PMX 是左手坐标系，而且几个导出器对三角形
+        // 绕序意见不一。把背对顶点法线的三角形翻过来，
+        // 再判断 Metal 该把哪种绕序当正面。
         var indices = model.indices
         var windingScore: Float = 0
         var triangle = 0
@@ -208,9 +208,9 @@ final class MMDMeshBuilder {
                        frontWinding: frontWinding)
     }
 
-    /// Average normals over coincident vertices. PMX vertex positions are in
-    /// model units and coincident seams are usually identical to 1e-3; using a
-    /// 1e-4 grid avoids merging nearby but distinct surfaces.
+    /// 对重合顶点平均法线。PMX 顶点位置以模型
+    /// 单位计，重合接缝通常在 1e-3 内相同；
+    /// 用 1e-4 网格，避免把相近但不同的面并在一起。
     private static func weldedShadingNormals(_ vertices: [PMXVertex]) -> [SIMD3<Float>] {
         var buckets: [MMDVertexPositionKey: [SIMD3<Float>]] = [:]
         buckets.reserveCapacity(vertices.count)
@@ -244,8 +244,8 @@ final class MMDMeshBuilder {
                 continue
             }
             let average = simd_normalize(sum)
-            // Preserve genuinely hard edges (cube corners, armor plates) but
-            // replace the split normals that cause toon shadow facets on skin.
+            // 保留真正的硬边（立方体角、盔甲片），
+            // 但替换掉在皮肤上造成卡通阴影色块的拆分法线。
             result[index] = simd_dot(original, average) > 0.32 ? average : original
         }
         return result

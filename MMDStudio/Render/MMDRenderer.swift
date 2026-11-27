@@ -82,9 +82,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
     /// 这里每帧向目标逼近，画面就不会瞬移。
     private var smoothedCanvasLift: Float = 0
     private var lastMorphWeights: [Float] = []
-    /// Rest positions and the working morph buffer. `MMDMorphController.positions`
-    /// used to allocate two full vertex arrays per change; on a 40k-vertex model
-    /// that is a megabyte of churn every time an expression slider moves.
+    /// 静止位置与工作用的 Morph 缓冲。`MMDMorphController.positions`
+    /// 以前每次变化都分配两个完整顶点数组；4 万顶点的模型上，
+    /// 表情滑杆一动就是一兆字节的反复分配。
     private var basePositions: [SIMD3<Float>] = []
     private var morphedPositions: [SIMD3<Float>] = []
     private var resolvedWeightsScratch: [Float] = []
@@ -104,9 +104,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
 
     private var renderScale: CGFloat = 1.0
 
-    /// Reusable offscreen render targets. Allocating three textures per frame
-    /// (MSAA colour, resolve, depth) cost tens of megabytes at 4K and was the
-    /// main reason exports could not reach the requested frame rate.
+    /// 复用的离屏渲染目标。以前每帧分配三张纹理
+    /// （MSAA 颜色、解析、深度），4K 下就是几十 MB，
+    /// 也是导出跑不到目标帧率的主因。
     private struct CaptureTargets {
         let width: Int
         let height: Int
@@ -116,11 +116,11 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         let depth: MTLTexture
     }
     private var cachedCaptureTargets: CaptureTargets?
-    /// Depth-only attachment reused by the zero-copy export path.
+    /// 零拷贝导出路径复用的纯深度附件。
     private var cachedCaptureDepth: (width: Int, height: Int, texture: MTLTexture)?
-    /// Reused readback buffer. Allocating a fresh 4K RGBA array per exported
-    /// frame cost 33 MB of churn and was the main source of memory pressure
-    /// during long exports.
+    /// 复用的回读缓冲。导出的每一帧都新分配一个 4K RGBA 数组，
+    /// 等于 33 MB 的反复分配，也是长导出期间
+    /// 内存压力的主要来源。
     private var captureBytesScratch = [UInt8]()
     private var appliedQuality: MMDQualityMode?
     private var lastQualityCheck = CACurrentMediaTime()
@@ -158,8 +158,8 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         super.init()
 
         view.device = device
-        // Engine recording blits the resolved drawable into a shared buffer.
-        // The default framebuffer-only drawable makes that blit illegal.
+        // 引擎录制要把解析后的 drawable 拷进共享缓冲。
+        // 默认的 framebuffer-only drawable 会让这次拷贝非法。
         view.framebufferOnly = false
         view.colorPixelFormat = .bgra8Unorm_srgb
         view.depthStencilPixelFormat = .depth32Float
@@ -179,7 +179,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         textures = MMDTextureLibrary(device: device, commandQueue: queue)
     }
 
-    // MARK: - Pipeline setup
+    // MARK: - 管线搭建
 
     private func buildPipelines(sampleCount: Int) throws {
         guard let library = device.makeDefaultLibrary() else {
@@ -238,7 +238,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         shadowDepthState = device.makeDepthStencilState(descriptor: shadow)
     }
 
-    // MARK: - Document loading
+    // MARK: - 文档加载
 
     private func reloadIfNeeded() {
         guard let document else { return }
@@ -258,12 +258,12 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             self.skeleton = MMDSkeleton(model: model)
             basePositions = model.vertices.map { $0.position }
             morphedPositions = basePositions
-            // These two buffers are only ever rebuilt as a pair inside
-            // refreshMorphPositions. Pre-sizing just one of them here left
-            // `groupAdditionsScratch` at the previous model's length, and the
-            // group-morph propagation then indexed past its end — a hard Swift
-            // trap inside draw(). That is what killed the app on any model
-            // carrying morphs, while simple props (no morphs) loaded fine.
+            // 这两个缓冲只在 refreshMorphPositions 里成对重建。
+            // 这里若只给其中一个预分配尺寸，
+            // `groupAdditionsScratch` 会停在上一个模型的长度，
+            // 组 Morph 传播随后就越界索引 ——
+            // draw() 里直接触发 Swift 硬崩。凡是带动画的模型都会挂，
+            // 而简单的道具（没有 Morph）反而正常。
             resolvedWeightsScratch = []
             groupAdditionsScratch = []
             baseDirectory = document.baseDirectory
@@ -305,8 +305,8 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
     }
 
     private func textureCacheWillChange() {
-        // The texture library is intentionally retained across draws, but a
-        // new mesh/base directory invalidates all resolved paths.
+        // 纹理库有意跨帧保留，但换了网格或基础目录，
+        // 所有解析过的路径都失效。
         textures?.clearCache()
     }
 
@@ -341,18 +341,18 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         return texture
     }
 
-    // MARK: - Capture
+    // MARK: - 截图
 
-    /// Drives one deterministic frame for the offline video exporter. The
-    /// document is advanced on the main thread because all render state is
-    /// main-thread owned, while the caller may wait on a background queue.
+    /// 为离线视频导出驱动一帧确定性渲染。
+    /// 文档在主线程推进，因为渲染状态都归主线程所有，
+    /// 而调用方可能在后台队列上等待。
     func captureFrame(frame: Float, width: Int, height: Int,
                       transparentBackground: Bool? = nil,
                       preferMSAA: Bool = false,
                       completion: @escaping (UIImage?) -> Void) {
-        // A synchronous hop avoids the async + semaphore round trip per frame,
-        // which dominated export time at 4K. captureStill already blocks until
-        // the GPU finishes, so callers stay sequential.
+        // 同步跳转省掉了每帧 async + 信号量的往返，
+        // 那在 4K 下是导出耗时的大头。captureStill 本来就会
+        // 阻塞到 GPU 完成，调用方天然是串行的。
         let work: () -> Void = { [weak self] in
             guard let self, let document = self.document else { completion(nil); return }
             document.renderFrame = max(0, min(document.duration, frame))
@@ -364,9 +364,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         if Thread.isMainThread { work() } else { DispatchQueue.main.sync(execute: work) }
     }
 
-    /// Frame capture for the video exporter: hands back tightly packed BGRA
-    /// rows instead of a UIImage, so the writer can memcpy the whole buffer and
-    /// fully overwrite whatever the pixel-buffer pool recycled.
+    /// 视频导出用的帧捕获：返回紧凑排列的 BGRA 行，
+    /// 而不是 UIImage，写入端可以整块 memcpy，
+    /// 把像素缓冲池回收来的内容完全覆盖掉。
     func captureFrameRaw(frame: Float, width: Int, height: Int,
                          transparentBackground: Bool? = nil,
                          completion: @escaping ([UInt8]?, Int) -> Void) {
@@ -390,10 +390,10 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    /// Captures an offscreen Metal render at an explicit pixel size. Unlike
-    /// the old drawable readback, this is independent from the on-screen
-    /// viewport, so the result is a real high-resolution render rather than
-    /// an upscaled screen capture.
+    /// 按指定像素尺寸离线渲染一帧 Metal。与旧的 drawable
+    /// 回读不同，它和屏幕视口无关，
+    /// 所以得到的是真正的高分辨率渲染，
+    /// 而不是放大的截屏。
     func capturePhoto(scale: CGFloat = 1, completion: @escaping (UIImage?) -> Void) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { completion(nil); return }
@@ -411,25 +411,25 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         onRenderScaleChange?(previous)
     }
 
-    /// Drops the cached off-screen render targets. Called when an export
-    /// starts so the first frame is never rendered into a texture that still
-    /// holds the tail of the previous export.
+    /// 丢弃缓存的离屏渲染目标。导出开始时调用，
+    /// 保证第一帧不会画进还留着
+    /// 上一次导出尾巴的纹理。
     func resetCaptureTargets() {
         cachedCaptureTargets = nil
         cachedCaptureDepth = nil
     }
 
-    /// Freezes the on-screen view during export so the display link stops
-    /// competing with the offscreen renderer for GPU time.
+    /// 导出期间冻结屏幕上的视图，让 display link 停止
+    /// 与离屏渲染抢 GPU。
     func setPreviewPaused(_ paused: Bool) {
         DispatchQueue.main.async { [weak self] in
             self?.view?.isPaused = paused
         }
     }
 
-    /// Wraps a CVPixelBuffer's IOSurface in a Metal texture. Rendering into
-    /// it lets the encoder read the frame in place, which removes a 33 MB
-    /// readback and a 33 MB memcpy per frame at 4K.
+    /// 把 CVPixelBuffer 的 IOSurface 包成 Metal 纹理。直接渲染进去，
+    /// 编码器就能原地读帧，4K 下每帧省掉 33 MB 回读
+    /// 和 33 MB memcpy。
     func makeCaptureTexture(for pixelBuffer: CVPixelBuffer) -> MTLTexture? {
         guard let surface = CVPixelBufferGetIOSurface(pixelBuffer)?.takeUnretainedValue() else {
             return nil
@@ -444,9 +444,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         return device.makeTexture(descriptor: descriptor, iosurface: surface, plane: 0)
     }
 
-    /// Renders one export frame directly into `texture`. Returns false when
-    /// the render could not be set up, so the caller can fall back to the
-    /// readback path.
+    /// 把一帧导出直接渲染进 `texture`。渲染环境搭不起来时返回 false，
+    /// 调用方好退回
+    /// 回读路径。
     @discardableResult
     func captureFrame(into texture: MTLTexture, frame: Float,
                       transparentBackground: Bool) -> Bool {
@@ -567,13 +567,13 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
                                       max(0.0, min(1.0, lightSettings.skinScatter)),
                                       lightSettings.useSDEFSkinning ? 1 : 0)
 
-        // Video frames skip MSAA: 4× at 4K was the single largest GPU cost and
-        // the encoder's own filtering masks the difference.
+        // 视频帧跳过 MSAA：4K 下 4× 是单项最大的 GPU 开销，
+        // 编码器自己的滤波会掩掉差别。
         let sampleCount = externalTarget != nil ? 1 : (preferMSAA ? max(1, view?.sampleCount ?? 4) : 1)
         let targets: CaptureTargets
         if let externalTarget {
-            // Video export path: render straight into the encoder's
-            // CVPixelBuffer. No MSAA, no readback, no memcpy.
+            // 视频导出路径：直接渲染进编码器的
+            // CVPixelBuffer。没有 MSAA、没有回读、没有 memcpy。
             let depthTexture: MTLTexture
             if let cached = cachedCaptureDepth, cached.width == width, cached.height == height {
                 depthTexture = cached.texture
@@ -773,10 +773,10 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             encoder.setDepthBias(0.0006, slopeScale: 1.2, clamp: 0)
             bindMeshBuffers(encoder, mesh: mesh)
             setScene(scene, encoder: encoder, vertexIndex: 6)
-            // The outline shader declares palette at slot 8 and the SDEF
-            // stream at 9, the mirror of the body pass. bindMeshBuffers puts
-            // SDEF in 8, so both slots have to be re-pointed or the hull reads
-            // skinning metadata as 4x4 bone matrices and explodes.
+            // 描边着色器把 palette 声明在 slot 8、SDEF 声明在 9，
+            // 与主体 pass 相反。bindMeshBuffers 把 SDEF 放在 8，
+            // 所以两个槽都要重新指向，否则外壳会把
+            // 蒙皮元数据当成 4x4 骨骼矩阵读，直接炸开。
             if let paletteBuffer = updatePaletteBuffer(pose.palettes) {
                 encoder.setVertexBuffer(paletteBuffer, offset: 0, index: 8)
             }
@@ -839,11 +839,11 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
                                     from: MTLRegionMake2D(0, 0, width, height),
                                     mipmapLevel: 0)
         }
-        // Export wants the raw BGRA rows so it can copy them straight into a
-        // CVPixelBuffer. Skipping the CGImage round trip removes a full copy
-        // per frame and, more importantly, removes Core Graphics compositing
-        // from the path that used to leave the first frame under every later
-        // frame.
+        // 导出要原始 BGRA 行，好直接拷进 CVPixelBuffer。
+        // 跳过 CGImage 往返，每帧少一次完整拷贝，
+        // 更重要的是把 Core Graphics 合成移出这条路径 ——
+        // 它以前会让第一帧被后面每一帧
+        // 盖住。
         if let bytesOut {
             bytesOut(captureBytesScratch, rowBytes)
             completion(nil)
@@ -867,14 +867,14 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         completion(UIImage(cgImage: image, scale: 1, orientation: .up))
     }
 
-    /// Starts a per-frame capture used by the engine recorder. The handler is
-    /// called off the main thread with tightly packed BGRA rows.
+    /// 启动引擎录制用的逐帧捕获。回调在
+    /// 非主线程、以紧凑 BGRA 行交付。
     func setEngineCaptureHandler(_ handler: ((Data, Int, Int, Int) -> Void)?) {
         engineCaptureHandler = handler
         lastEngineCaptureTime = 0
     }
 
-    /// One-finger scene editing used by the on-canvas transform gizmo.
+    /// 画布变换手柄用的单指场景编辑。
     func transformSelection(deltaX: Float, deltaY: Float) {
         guard let document else { return }
         if abs(deltaX) + abs(deltaY) < 0.0001 { return }
@@ -961,15 +961,15 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    // MARK: - Camera controls
+    // MARK: - 相机控制
 
     func resetCamera() {
         if let mesh { camera.fit(bounds: mesh.bounds) }
         document?.useCameraMotion = false
     }
 
-    /// Camera presets used by the on-canvas camera panel. They always switch
-    /// back to a manual camera so a VMD camera track cannot override the view.
+    /// 画布相机面板用的预设。它们总会切回手动相机，
+    /// 免得 VMD 相机轨道压过视角。
     func applyCameraPreset(_ preset: String) {
         guard let mesh else { return }
         let radius = max(mesh.bounds.radius, 0.5)
@@ -1050,7 +1050,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         lastAutoOrbitTime = 0
     }
 
-    // MARK: - Frame preparation
+    // MARK: - 帧准备
 
     private func refreshMorphPositions(document: MMDModelDocument, model: PMXModel,
                                        frame: Float, force: Bool = false) {
@@ -1073,9 +1073,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             return
         }
 
-        // Propagate group morphs exactly like MMDMorphController.resolvedWeights,
-        // but into reusable buffers so an expression slider does not allocate a
-        // new Float array per pass.
+        // 组 Morph 传播与 MMDMorphController.resolvedWeights 完全一致，
+        // 但写进复用缓冲，表情滑杆因此不会
+        // 每一遍都新建一个 Float 数组。
         if resolvedWeightsScratch.count != model.morphs.count
             || groupAdditionsScratch.count != model.morphs.count {
             resolvedWeightsScratch = [Float](repeating: 0, count: model.morphs.count)
@@ -1164,10 +1164,10 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             ? renderSettings.renderMode : .realistic
         uniforms.renderMode = effectiveRenderMode.index
 
-        // The cel shader needs to know which surfaces are skin (warm light
-        // bleed at the terminator) and which are metal (harder, brighter
-        // highlight). PMX has no material-type field, so the authored name is
-        // the only signal available.
+        // 卡通着色器要知道哪些面是皮肤（明暗交界处有暖色
+        // 透光），哪些是金属（更硬更亮的高光）。
+        // PMX 没有材质类型字段，
+        // 作者写的名字是唯一可用的信号。
         let materialName = (material.name + " " + material.nameEn).lowercased()
         let isSkin = materialName.contains("肌") || materialName.contains("skin")
             || materialName.contains("顔") || materialName.contains("face")
@@ -1213,9 +1213,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<MMDMaterialUniforms>.stride, index: index)
     }
 
-    /// Draw imported weapons/props as independent PMX meshes. A bound prop
-    /// follows the selected character bone's rest-to-current delta while
-    /// retaining its own editable world transform.
+    /// 把导入的武器/挂件当作独立 PMX 网格绘制。绑定的挂件
+    /// 跟随所选角色骨骼的静止→当前增量，
+    /// 同时保留自己可编辑的世界变换。
     @discardableResult
     private func encodeAttachments(_ encoder: MTLRenderCommandEncoder,
                                    scene baseScene: MMDSceneUniforms,
@@ -1347,7 +1347,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         return (draws, triangles)
     }
 
-    // MARK: - Quality and performance
+    // MARK: - 画质与性能
 
     private var autoScale: CGFloat = 1.0
     private var autoLevel = 0
@@ -1482,7 +1482,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
     // MARK: - MTKViewDelegate
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {
-        // MTKView recreates its render targets automatically.
+        // MTKView 会自动重建渲染目标。
     }
 
     func draw(in view: MTKView) {
@@ -1501,9 +1501,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
               let descriptor = view.currentRenderPassDescriptor,
               let commandBuffer = commandQueue.makeCommandBuffer() else { return }
 
-        // Always start from a cleared attachment. Relying on MTKView's default
-        // descriptor left the previous pose visible on some devices, which
-        // looked like every rendered frame was stacked on top of the last one.
+        // 永远从清空的附件开始。依赖 MTKView 的默认
+        // 描述符，某些设备上会留下上一帧的姿势，
+        // 看上去像每一帧都叠在上一帧上。
         descriptor.colorAttachments[0].loadAction = .clear
         if let document {
             descriptor.colorAttachments[0].clearColor = MTLClearColor(
@@ -1534,9 +1534,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             return
         }
         let model = document.model
-        // Rendering samples the sub-frame position while `currentFrame` keeps
-        // publishing at 30 Hz; without this the 120 Hz canvas repeated each
-        // pose four times in a row.
+        // 渲染采样亚帧位置，而 `currentFrame` 仍按 30 Hz
+        // 发布；没有这一层，120 Hz 画布会把同一个姿势
+        // 连放四遍。
         let renderFrame = document.interpolatedFrame()
 
         refreshMorphPositions(document: document, model: model, frame: renderFrame)
@@ -1646,15 +1646,15 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         encoder.setFrontFacing(mesh.frontWinding)
         encoder.setTriangleFillMode(.fill)
 
-        // Studio backdrop: a full-screen gradient with a soft center glow.
-        // Drawn first, depth-tested against the cleared depth buffer.
+        // 摄影棚背景：全屏渐变 + 柔和的中心光晕。
+        // 最先绘制，对着已清空的深度缓冲做深度测试。
         drawBackdrop(encoder: encoder, settings: document.renderSettings,
                      aspect: Float(max(1, view.drawableSize.width) / max(1, view.drawableSize.height)),
                      document: document)
         drawCalls += 1
         encoder.setTriangleFillMode(document.renderSettings.renderMode == .wireframe ? .lines : .fill)
 
-        // Grid
+        // 网格
         if document.renderSettings.showGrid, let gridBuffer, gridVertexCount > 0 {
             encoder.setRenderPipelineState(gridPipeline)
             encoder.setDepthStencilState(overlayDepthState)
@@ -1667,10 +1667,10 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             triangles += gridVertexCount / 3
         }
 
-        // Soft contact shadow. The previous pass projected every triangle
-        // onto the floor and filled it with a flat 55% black silhouette, which
-        // looked like a second flattened character. A radial contact patch
-        // keeps the model grounded without producing that artifact.
+        // 柔和接触阴影。上一版把每个三角形投到地面上，
+        // 填成 55% 黑的平面剪影，
+        // 看起来像第二个被压扁的角色。改成径向接触斑，
+        // 既让模型落地，又不产生那种伪影。
         if effectiveShadow, let groundShadowBuffer, groundShadowVertexCount > 0 {
             encoder.setRenderPipelineState(contactShadowPipeline)
             encoder.setDepthStencilState(shadowDepthState)
@@ -1684,9 +1684,9 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             drawCalls += 1
         }
 
-        // Opaque pass
-        encoder.setRenderPipelineState(meshOpaquePipeline)
-        encoder.setDepthStencilState(opaqueDepthState)
+        // 主体：按 PMX 声明顺序逐条绘制，不拆「先不透明、后半透明」两批。
+        // 内衬写在材质表前面、外裙写在后面，拆批会把顺序翻过来，
+        // 裙内就会盖住整片下摆 —— 与实时绘制那段是同一个道理。
         bindMeshBuffers(encoder, mesh: mesh)
         setScene(scene, encoder: encoder, vertexIndex: 6)
         if let paletteBuffer = updatePaletteBuffer(pose.palettes) {
@@ -1694,13 +1694,22 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         }
         encoder.setFragmentBytes(&scene, length: MemoryLayout<MMDSceneUniforms>.stride, index: 0)
 
+        var drawnTranslucent: Bool?
+
         for submesh in mesh.subMeshes {
             let materialIndex = submesh.materialIndex
             guard document.materialSettings.indices.contains(materialIndex) else { continue }
             let settings = document.materialSettings[materialIndex]
-            guard settings.visible, settings.diffuse.w >= 0.999 else { continue }
-            let material = model.materials[materialIndex]
+            guard settings.visible, settings.diffuse.w > 0.002 else { continue }
 
+            let translucent = settings.diffuse.w < 0.999
+            if drawnTranslucent != translucent {
+                encoder.setRenderPipelineState(translucent ? meshTransparentPipeline : meshOpaquePipeline)
+                encoder.setDepthStencilState(translucent ? overlayDepthState : opaqueDepthState)
+                drawnTranslucent = translucent
+            }
+
+            let material = model.materials[materialIndex]
             let baseTexture = (settings.useTexture && material.textureIndex >= 0)
                 ? textures.embeddedOrFallback(index: material.textureIndex, model: model, baseDirectory: baseDirectory, fallbackRoot: fallbackRoot)
                 : textures.whiteTexture
@@ -1712,12 +1721,11 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(sphereTexture, index: 1)
             encoder.setFragmentTexture(toonTexture, index: 2)
 
-            let uniforms = makeMaterialUniforms(document: document, materialIndex: materialIndex,
-                                                transparent: false, flags: 0,
-                                                texturePresent: settings.useTexture && material.textureIndex >= 0,
-                                                spherePresent: material.sphereIndex >= 0 && settings.sphereMode != 0,
-                                                toonPresent: settings.useToon)
-            var materialUniforms = uniforms
+            var materialUniforms = makeMaterialUniforms(document: document, materialIndex: materialIndex,
+                                                        transparent: translucent, flags: 0,
+                                                        texturePresent: settings.useTexture && material.textureIndex >= 0,
+                                                        spherePresent: material.sphereIndex >= 0 && settings.sphereMode != 0,
+                                                        toonPresent: settings.useToon)
             encoder.setFragmentBytes(&materialUniforms, length: MemoryLayout<MMDMaterialUniforms>.stride, index: 1)
             encoder.setCullMode(settings.doubleSided ? .none : .back)
             encoder.drawIndexedPrimitives(type: .triangle,
@@ -1729,17 +1737,17 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             triangles += submesh.indexCount / 3
         }
 
-        // Edge pass
+        // 描边 pass
         if effectiveEdges {
             encoder.setRenderPipelineState(edgePipeline)
             encoder.setDepthStencilState(overlayDepthState)
             encoder.setDepthBias(0.0006, slopeScale: 1.2, clamp: 0)
             bindMeshBuffers(encoder, mesh: mesh)
             setScene(scene, encoder: encoder, vertexIndex: 6)
-            // The outline shader declares palette at slot 8 and the SDEF
-            // stream at 9, the mirror of the body pass. bindMeshBuffers puts
-            // SDEF in 8, so both slots have to be re-pointed or the hull reads
-            // skinning metadata as 4x4 bone matrices and explodes.
+            // 描边着色器把 palette 放在 slot 8、SDEF 放在 9，与主体相反。
+            // bindMeshBuffers 把 SDEF 放在 8，两个槽都要重指，
+            // 否则外壳会把蒙皮元数据当成 4x4 骨骼矩阵读，
+            // 直接炸开。
             if let paletteBuffer = updatePaletteBuffer(pose.palettes) {
                 encoder.setVertexBuffer(paletteBuffer, offset: 0, index: 8)
             }
@@ -1769,65 +1777,12 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             encoder.setDepthBias(0, slopeScale: 0, clamp: 0)
         }
 
-        // Transparent pass
-        let transparentMeshes = mesh.subMeshes.filter { submesh in
-            guard document.materialSettings.indices.contains(submesh.materialIndex) else { return false }
-            let settings = document.materialSettings[submesh.materialIndex]
-            return settings.visible && settings.diffuse.w < 0.999
-        }.sorted { lhs, rhs in
-            // MMD authors translucent layers in material order (inner layer
-            // first). Sorting by view distance broke that contract and let
-            // skirts and veils bleed through the body at shallow angles.
-            lhs.materialIndex < rhs.materialIndex
-        }
-
-        if !transparentMeshes.isEmpty {
-            encoder.setRenderPipelineState(meshTransparentPipeline)
-            encoder.setDepthStencilState(overlayDepthState)
-            bindMeshBuffers(encoder, mesh: mesh)
-            setScene(scene, encoder: encoder, vertexIndex: 6)
-            if let paletteBuffer = updatePaletteBuffer(pose.palettes) {
-                encoder.setVertexBuffer(paletteBuffer, offset: 0, index: 7)
-            }
-            encoder.setFragmentBytes(&scene, length: MemoryLayout<MMDSceneUniforms>.stride, index: 0)
-            for submesh in transparentMeshes {
-                let materialIndex = submesh.materialIndex
-                let settings = document.materialSettings[materialIndex]
-                let material = model.materials[materialIndex]
-                let baseTexture = (settings.useTexture && material.textureIndex >= 0)
-                    ? textures.embeddedOrFallback(index: material.textureIndex, model: model, baseDirectory: baseDirectory, fallbackRoot: fallbackRoot)
-                    : textures.whiteTexture
-                let sphereTexture = (material.sphereIndex >= 0 && settings.sphereMode != 0)
-                    ? textures.embeddedOrFallback(index: material.sphereIndex, model: model, baseDirectory: baseDirectory, fallbackRoot: fallbackRoot)
-                    : textures.whiteTexture
-                let toonTexture = textures.toonTexture(for: material, model: model, baseDirectory: baseDirectory, fallbackRoot: fallbackRoot)
-                encoder.setFragmentTexture(baseTexture, index: 0)
-                encoder.setFragmentTexture(sphereTexture, index: 1)
-                encoder.setFragmentTexture(toonTexture, index: 2)
-                let uniforms = makeMaterialUniforms(document: document, materialIndex: materialIndex,
-                                                    transparent: true, flags: 0,
-                                                    texturePresent: settings.useTexture && material.textureIndex >= 0,
-                                                    spherePresent: material.sphereIndex >= 0 && settings.sphereMode != 0,
-                                                    toonPresent: settings.useToon)
-                var materialUniforms = uniforms
-                encoder.setFragmentBytes(&materialUniforms, length: MemoryLayout<MMDMaterialUniforms>.stride, index: 1)
-                encoder.setCullMode(settings.doubleSided ? .none : .back)
-                encoder.drawIndexedPrimitives(type: .triangle,
-                                              indexCount: submesh.indexCount,
-                                              indexType: .uint32,
-                                              indexBuffer: mesh.indexBuffer,
-                                              indexBufferOffset: submesh.indexBufferOffset)
-                drawCalls += 1
-                triangles += submesh.indexCount / 3
-            }
-        }
-
         let attachmentStats = encodeAttachments(encoder, scene: scene, document: document,
                                                 characterSkeleton: skeleton, characterPose: pose)
         drawCalls += attachmentStats.draws
         triangles += attachmentStats.triangles
 
-        // Bone, scene-transform and physics debug overlays
+        // 骨骼、场景变换与物理调试叠加层
         if document.renderSettings.showBones || document.sceneEditEnabled
             || document.renderSettings.showRigidBodies
             || document.renderSettings.showPhysicsColliders {
@@ -1843,10 +1798,10 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
             }
         }
 
-        // Metal allows only one encoder on a command buffer at a time. The
-        // optional photo/video blits below must start after the render pass
-        // has been closed; creating a blit encoder while the render encoder
-        // is still open is invalid and can terminate the process.
+        // Metal 在一条命令缓冲上同时只允许一个编码器。
+        // 下面可选的图片/视频 blit 必须等渲染 pass 关闭后
+        // 再开始；渲染编码器还开着就创建 blit 编码器是非法的，
+        // 可能直接把进程干掉。
         encoder.endEncoding()
 
         var photoBuffer: MTLBuffer?
@@ -1942,7 +1897,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         commandBuffer.commit()
     }
 
-    // MARK: - Helpers
+    // MARK: - 辅助
 
     private static func image(from buffer: MTLBuffer, width: Int, height: Int,
                               bytesPerRow: Int) -> UIImage? {
@@ -2168,12 +2123,12 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
         overlayCapacity = vertices.count
     }
 
-    /// Wireframes for the physics stage. Two different things are drawn on
-    /// purpose: the rigid bodies the PMX file declares, and the collision
-    /// spheres the cloth solver actually tests against (measured from the
-    /// mesh). On converted characters those two disagree, and that
-    /// disagreement is exactly what shows up as a skirt cutting through a
-    /// thigh that "clearly has a collider".
+    /// 物理阶段的线框。这里故意画两种东西：
+    /// PMX 文件声明的刚体，以及布料求解器真正
+    /// 参与测试的碰撞球（从网格实测）。
+    /// 在转换过的角色上这两者会对不上，
+    /// 而那个偏差正是「大腿明明有碰撞体、
+    /// 裙子还是切过去」的样子。
     /// 底部面板占位时，把画面整体上移并缩小，模型仍完整落在可见区域。
     /// 平移量以 NDC 计（-1…1），0.34 约等于屏幕高度的 17%。
     private func canvasAdjustedProjection(_ projection: simd_float4x4,
@@ -2195,8 +2150,8 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
                                         into vertices: inout [MMDDrawVertex]) {
         let dynamicColor = SIMD4<Float>(1.0, 0.52, 0.15, 0.95)
         let kinematicColor = SIMD4<Float>(0.35, 0.85, 0.98, 0.85)
-        // Static bodies are only context; keeping them bright turned 250
-        // bodies into a wall that hid the model.
+        // 静止刚体只是背景参照；让它们保持高亮，
+        // 250 个刚体就成了一道挡住模型的墙。
         let staticColor = SIMD4<Float>(0.58, 0.63, 0.72, 0.30)
         let colliderColor = SIMD4<Float>(0.32, 1.0, 0.55, 0.5)
         let hasMatrix = pose.worldMatrices.count == model.bones.count
@@ -2314,7 +2269,7 @@ final class MMDRenderer: NSObject, MTKViewDelegate {
                 }
             }
         }
-        // Corner index = (z + 1) * 4 + (y + 1) * 2 + (x + 1)
+        // 角点索引 = (z + 1) * 4 + (y + 1) * 2 + (x + 1)
         let edges: [(Int, Int)] = [
             (0, 1), (2, 3), (4, 5), (6, 7),
             (0, 2), (1, 3), (4, 6), (5, 7),

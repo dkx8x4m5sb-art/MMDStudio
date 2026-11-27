@@ -731,12 +731,12 @@ private struct LightDetailView: View {
     }
 }
 
-// MARK: - Render studio
+// MARK: - 渲染工作台
 
-/// A compact DCC-style render workspace. It keeps the most important
-/// two-tone controls (shadow tint, terminator softness, rim, grading and
-/// output size) in one place; the older Settings form remains the low-level
-/// inspector for physics, diagnostics and model metadata.
+/// 紧凑的 DCC 式渲染工作区。最重要的
+/// 双色控制（阴影色调、明暗交界柔和度、轮廓光、调色
+/// 与输出尺寸）都放在一处；旧的设置表单仍是
+/// 物理、诊断和模型元数据的底层检查器。
 struct RenderStudioView: View {
 
     @ObservedObject var document: MMDModelDocument
@@ -986,7 +986,7 @@ struct RenderStudioView: View {
     }
 }
 
-// MARK: - Scene objects / transform editor
+// MARK: - 场景物体 / 变换编辑器
 
 struct SceneEditorView: View {
     @ObservedObject var document: MMDModelDocument

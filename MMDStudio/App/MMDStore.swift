@@ -21,34 +21,34 @@ struct MMDModelGroup: Identifiable, Codable, Hashable {
 
 private struct MMDLibraryMetadata: Codable {
     var groups: [MMDModelGroup] = []
-    /// Key: top-level imported package folder. Logical grouping leaves the
-    /// archive's internal texture paths untouched.
+    /// 键：顶层导入包目录。逻辑分组不改动
+    /// 压缩包内部的贴图路径。
     var packageGroups: [String: UUID] = [:]
 }
 
 struct MMDModelEntry: Identifiable, Hashable {
-    /// Stable identity: the PMX path relative to the model library.
+    /// 稳定标识：PMX 相对模型库的路径。
     let id: String
-    /// Full name as the model or its file spells it, e.g. `蕾米埃尔-白`.
+    /// 模型或文件里的完整写法，例如 `蕾米埃尔-白`。
     var displayName: String
     let pmxPath: String
-    /// Top-level imported folder. Several PMX models may share this folder.
+    /// 顶层导入目录。多个 PMX 模型可能共用这个目录。
     let packageURL: URL
-    /// Directory containing the PMX; texture relative paths start here.
+    /// 存放 PMX 的目录；贴图相对路径从这里开始。
     let assetDirectory: URL
     let relativePath: String
     var role: MMDModelRole = .character
     var groupID: UUID?
-    /// Folder this model lives in: the character's name. Every outfit of one
-    /// character shares it even when the outfits arrived in separate archives,
-    /// which is what turns 白/黑/泳装 into one folder instead of three.
+    /// 这个模型所在的目录：角色名。同一个角色的每套衣服
+    /// 都共用它，哪怕衣服是分开的压缩包导入的 ——
+    /// 白/黑/泳装 因此合成一个目录而不是三个。
     var characterName: String?
-    /// Outfit or prop suffix shown inside that folder: 白 / 泳装 / 武器.
+    /// 该目录内显示的款式或道具后缀：白 / 泳装 / 武器。
     var variantName: String?
 
     var folderName: String { packageURL.lastPathComponent }
-    /// Line text inside the character folder. A folder that only holds the
-    /// character itself hides its header, so this doubles as the list title.
+    /// 角色目录里显示的行文本。只装角色本身的目录
+    /// 会把标题藏起来，所以它同时充当列表标题。
     var rowName: String {
         if let variantName, !variantName.isEmpty { return variantName }
         return characterName ?? displayName
@@ -66,12 +66,12 @@ final class MMDStore: ObservableObject {
     @Published var groups: [MMDModelGroup] = []
     @Published var errorMessage: String?
 
-    /// Import only the primary PMX from a multi-model archive. The other
-    /// models stay on disk and can be added from the scene editor.
+    /// 多模型包里只导入主 PMX。其余模型
+    /// 留在磁盘上，可从场景编辑器添加。
     @Published var importAllModels: Bool {
         didSet { UserDefaults.standard.set(importAllModels, forKey: Self.importAllModelsKey) }
     }
-    /// Automatically attach weapons/props when a character is opened.
+    /// 打开角色时自动挂上武器/挂件。
     @Published var autoAttachPackageModels: Bool {
         didSet { UserDefaults.standard.set(autoAttachPackageModels, forKey: Self.autoAttachKey) }
     }
@@ -83,9 +83,9 @@ final class MMDStore: ObservableObject {
     private var metadataURL: URL { libraryURL.appendingPathComponent(".mmd-library.json") }
 
     init() {
-        // Multi-character archives (绳匠 → 玲 + 哲) used to import only the
-        // largest PMX, which reads as "导入失败：少了一个角色". Now that models
-        // are filed by character, importing the whole archive is safe.
+        // 多角色包（绳匠 → 玲 + 哲）以前只导入最大的 PMX，
+        // 看起来就是「导入失败：少了一个角色」。现在模型按角色归档，
+        // 整包导入是安全的。
         let storedAll = UserDefaults.standard.object(forKey: Self.importAllModelsKey)
         importAllModels = storedAll == nil ? true : UserDefaults.standard.bool(forKey: Self.importAllModelsKey)
         autoAttachPackageModels = UserDefaults.standard.bool(forKey: Self.autoAttachKey)
@@ -113,7 +113,7 @@ final class MMDStore: ObservableObject {
         }
     }
 
-    // MARK: - Library
+    // MARK: - 模型库
 
     func refresh() {
         let fileManager = FileManager.default
@@ -150,7 +150,7 @@ final class MMDStore: ObservableObject {
             let left = lhs.characterName ?? lhs.displayName
             let right = rhs.characterName ?? rhs.displayName
             if left != right { return left.localizedStandardCompare(right) == .orderedAscending }
-            // The character row goes above its own props.
+            // 角色行排在自己的挂件之上。
             if lhs.role != rhs.role { return lhs.role == .character }
             return lhs.rowName.localizedStandardCompare(rhs.rowName) == .orderedAscending
         }
@@ -205,8 +205,8 @@ final class MMDStore: ObservableObject {
         refresh()
     }
 
-    /// Files are shown relative to the imported package so users can inspect
-    /// exactly which textures/PMX files belong together before deleting them.
+    /// 文件按相对导入包显示，用户删之前
+    /// 能看清哪些贴图/PMX 是一套的。
     func packageFiles(for entry: MMDModelEntry) -> [URL] {
         guard let enumerator = FileManager.default.enumerator(at: entry.packageURL,
                                                               includingPropertiesForKeys: [.isRegularFileKey],
@@ -258,10 +258,10 @@ final class MMDStore: ObservableObject {
         refresh()
     }
 
-    /// Remove a whole imported package, used by the storage manager where the
-    /// unit of deletion is the package folder rather than a PMX entry list.
-    /// The folder's group assignment is dropped too, otherwise a later import
-    /// that reuses the name would silently land in the old group.
+    /// 删除整个导入包。存储管理器以包目录为删除单位，
+    /// 而不是 PMX 条目列表。
+    /// 目录的分组归属也一并清掉，否则以后再导入
+    /// 同名包会悄悄落进旧分组。
     func deletePackage(at url: URL) {
         let root = libraryURL.standardizedFileURL.path + "/"
         guard url.standardizedFileURL.path.hasPrefix(root) else { return }
@@ -278,9 +278,9 @@ final class MMDStore: ObservableObject {
         let data = try Data(contentsOf: pmxURL)
         let model = try Self.parseModel(data: data, url: pmxURL)
         MMDLog.shared.info("Model parsed (\(pmxURL.pathExtension.uppercased())): vertices=\(model.vertices.count), materials=\(model.materials.count), bones=\(model.bones.count), morphs=\(model.morphs.count), textures=\(model.textures.count)")
-        // Textures normally live beside the PMX, but multi-model packages often
-        // keep a shared texture folder at the archive root. Both roots are
-        // searched, with the PMX directory taking priority.
+        // 贴图通常和 PMX 放在一起，但多模型包常把
+        // 共用贴图目录放在压缩包根目录。两个根都会
+        // 搜，PMX 所在目录优先。
         let document = MMDModelDocument(model: model,
                                         baseDirectory: entry.assetDirectory,
                                         fallbackRoot: entry.packageURL == entry.assetDirectory ? nil : entry.packageURL,
@@ -289,10 +289,10 @@ final class MMDStore: ObservableObject {
         if entry.role == .character && autoAttachPackageModels {
             var imported = 0
             for candidate in findAllPMX(in: entry.packageURL) where candidate.path != pmxURL.path {
-                // Three accessories is enough for a normal package, and each one
-                // is a full PMX parse plus its own vertex/bone arrays. Eight of
-                // them on a heavy character tipped the load over the memory
-                // budget before a single frame was drawn.
+                // 普通包挂三个就够，而且每一个都是
+                // 完整的 PMX 解析加各自的顶点/骨骼数组。
+                // 重型角色上挂八个，还没画一帧
+                // 就超出内存预算了。
                 guard imported < 3, Self.shouldAutoAttach(candidate, relativeTo: model) else { continue }
                 let size = (try? candidate.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
                 guard size < 12 * 1024 * 1024 else {
@@ -312,9 +312,9 @@ final class MMDStore: ObservableObject {
                 document.sceneEditEnabled = false
             }
         }
-        // A package that ships a dance gets it imported into the shared
-        // library once (deduplicated by content) and then loads the cut whose
-        // bones actually match this model. Nothing is copied per session.
+        // 带舞蹈的包会把舞导入共享库一次
+        // （按内容去重），再挑骨骼真正匹配
+        // 这个模型的那一版加载。会话之间不复制文件。
         let motionLibrary = MMDMotionLibrary.shared
         motionLibrary.importBundledMotions(in: entry.packageURL, sourceName: entry.folderName)
         let bundled = motionLibrary.motions.filter { $0.sourceName == entry.folderName }
@@ -334,7 +334,7 @@ final class MMDStore: ObservableObject {
         delete(entries: [entry])
     }
 
-    // MARK: - Import
+    // MARK: - 导入
 
     private static func primaryModel(in files: [URL]) -> URL {
         files.max { lhs, rhs in
@@ -345,8 +345,8 @@ final class MMDStore: ObservableObject {
         } ?? files[0]
     }
 
-    /// Import one folder, PMX file, or ZIP archive. All PMX files found inside
-    /// the imported folder are registered, not just the first one.
+    /// 导入一个目录、PMX 文件或 ZIP。导入目录里
+    /// 找到的所有 PMX 都会登记，不只第一个。
     func importModel(from source: URL) throws -> MMDModelEntry {
         let result = try importModels(from: [source])
         guard let first = result.entries.first else {
@@ -439,8 +439,8 @@ final class MMDStore: ObservableObject {
         return MMDImportResult(entries: entries, warnings: warnings)
     }
 
-    /// Copy images and nested texture folders next to a single PMX. Returns
-    /// false when the source directory cannot be read at all.
+    /// 把图片与嵌套贴图目录复制到单个 PMX 旁边。
+    /// 源目录完全读不了时返回 false。
     @discardableResult
     private func copySiblingResources(from parent: URL, to destination: URL) -> Bool {
         let fileManager = FileManager.default
@@ -479,11 +479,11 @@ final class MMDStore: ObservableObject {
         return candidate
     }
 
-    // MARK: - Legacy cleanup
+    // MARK: - 旧数据清理
 
-    /// Earlier builds shipped a generated sample PMX/VMD. It is no longer
-    /// part of the app; remove the old copy from Documents on upgrade so the
-    /// library starts clean.
+    /// 早期版本自带一个示例 PMX/VMD。现在不再
+    /// 随 App 提供；升级时从 Documents 删掉旧副本，
+    /// 让模型库从干净状态开始。
     private func removeLegacySampleIfNeeded() {
         let fileManager = FileManager.default
         let destination = libraryURL.appendingPathComponent("SampleModel", isDirectory: true)
@@ -496,12 +496,12 @@ final class MMDStore: ObservableObject {
         }
     }
 
-    // MARK: - Character grouping
+    // MARK: - 角色归类
 
-    /// Each model is filed under its own character instead of its archive.
-    /// See `MMDCharacterNaming` for why: archives are named after series
-    /// (绳匠 holds 玲 and 哲) and one character's outfits often arrive in
-    /// several archives (蕾米埃尔 白/黑/泳装).
+    /// 每个模型归到自己的角色下，而不是归到压缩包下。
+    /// 原因见 `MMDCharacterNaming`：压缩包按系列命名
+    /// （绳匠 里装着 玲 和 哲），一个角色的衣服也常分散在
+    /// 几个压缩包里（蕾米埃尔 白/黑/泳装）。
     private static func classify(_ input: [MMDModelEntry]) -> [MMDModelEntry] {
         let namingInputs = input.map {
             MMDCharacterNaming.Input(id: $0.id,
@@ -522,7 +522,7 @@ final class MMDStore: ObservableObject {
         return result
     }
 
-    // MARK: - Helpers
+    // MARK: - 辅助
 
     private func findAllPMX(in folder: URL) -> [URL] {
         let fileManager = FileManager.default
@@ -551,8 +551,8 @@ final class MMDStore: ObservableObject {
         if isAccessoryPath(url.path) { return true }
         guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
               let model = try? Self.parseModel(data: data, url: url) else { return false }
-        // Conservative fallback: only small, non-humanoid static meshes are
-        // treated as props. Alternative full characters stay independent.
+        // 保守兜底：只有小的、非人形静态网格
+        // 才当挂件。另一种完整角色保持独立。
         let hasHead = model.bones.contains {
             let name = MMDModelDocument.normalizedBoneName($0.name)
             return ["head", "頭", "头"].contains { name == $0 || name.contains($0) }
@@ -585,8 +585,8 @@ final class MMDStore: ObservableObject {
             header = raw ?? ""
         }
         var file = pmx.deletingPathExtension().lastPathComponent
-        // If the archive stored a CP1252/Latin-1 interpretation of a CJK
-        // filename, macOS exposes combining marks such as I+U+0302.
+        // 如果压缩包存的是 CJK 文件名的 CP1252/Latin-1 解释，
+        // macOS 会暴露 I+U+0302 这类组合附标。
         if file.unicodeScalars.contains(where: { (0x0300...0x036F).contains($0.value) }) {
             file = MMDZipArchive.repairedFilename(file) ?? ""
         }

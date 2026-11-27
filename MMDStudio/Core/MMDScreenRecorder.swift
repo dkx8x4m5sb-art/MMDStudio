@@ -10,9 +10,9 @@ import Foundation
 import Photos
 import UIKit
 
-/// Records the Metal viewport through the renderer itself. Unlike ReplayKit,
-/// this does not include SwiftUI toolbars or device status bars, and it keeps
-/// the full render resolution instead of the system screen-recording size.
+/// 通过渲染器本身录制 Metal 视口。与 ReplayKit 不同，
+/// 它不包含 SwiftUI 工具栏或系统状态栏，
+/// 保持完整渲染分辨率，而不是系统录屏的尺寸。
 final class MMDScreenRecorder: ObservableObject {
 
     static let shared = MMDScreenRecorder()
@@ -62,8 +62,8 @@ final class MMDScreenRecorder: ObservableObject {
         }
     }
 
-    /// Called from the renderer after a frame has been copied into a shared
-    /// Metal buffer. The queue serializes AVAssetWriter work off the GPU thread.
+    /// 一帧拷进共享 Metal 缓冲后由渲染器调用。
+    /// 队列把 AVAssetWriter 的工作排到 GPU 线程之外。
     func append(frame data: Data, width: Int, height: Int, bytesPerRow: Int) {
         queue.async { [weak self] in
             guard let self, self.isRecording || self.writer != nil else { return }

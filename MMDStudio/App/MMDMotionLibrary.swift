@@ -8,19 +8,19 @@
 import Combine
 import Foundation
 
-/// One imported VMD kept in the app's own motion library.
+/// 动作库里的一个导入 VMD。
 ///
-/// A motion and its camera are separate files in MMD and are used separately:
-/// the dance drives bones, the camera drives the shot. Keeping them apart in
-/// the library means the canvas can mix any motion with any camera instead of
-/// re-importing a zip every time a model is opened.
+/// 在 MMD 里动作和相机是两个文件、分开使用：
+/// 舞蹈驱动骨骼，相机驱动镜头。库里把它们分开，
+/// 画布就能任意组合动作与相机，不必每次
+/// 打开模型都重新导入 zip。
 struct MMDMotionAsset: Identifiable, Hashable, Codable {
     enum Kind: String, Codable {
         case motion
         case camera
     }
 
-    /// Content hash. Importing the same file twice resolves to one entry.
+    /// 内容哈希。同一个文件导入两次只留一条。
     var id: String
     var title: String
     var fileName: String
@@ -30,10 +30,10 @@ struct MMDMotionAsset: Identifiable, Hashable, Codable {
     var boneTrackCount: Int
     var morphTrackCount: Int
     var cameraKeyCount: Int
-    /// Paths relative to the library root, so the folder can be moved.
+    /// 相对库根的路径，整个目录可以搬走。
     var relativePath: String
     var relativeAudioPath: String?
-    /// Package or file the user picked, shown as provenance.
+    /// 用户选的包或文件，作为来源显示。
     var sourceName: String
     var importedAt: Date
 
@@ -54,9 +54,9 @@ struct MMDMotionAsset: Identifiable, Hashable, Codable {
     }
 }
 
-/// Persistent motion library: `Documents/MMDStudio/Motions/<hash>/<file>.vmd`.
-/// Files are stored once per content hash, so re-importing a pack (or opening a
-/// model that ships its own motion) never duplicates anything on disk.
+/// 持久动作库：`Documents/MMDStudio/Motions/<hash>/<file>.vmd`。
+/// 文件按内容哈希只存一份，重新导入一个包
+/// （或打开自带动作的模型）都不会在磁盘上重复。
 final class MMDMotionLibrary: ObservableObject {
     static let shared = MMDMotionLibrary()
 
@@ -89,7 +89,7 @@ final class MMDMotionLibrary: ObservableObject {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
-    // MARK: - Import
+    // MARK: - 导入
 
     struct ImportReport {
         var addedMotions = 0
@@ -111,8 +111,8 @@ final class MMDMotionLibrary: ObservableObject {
         }
     }
 
-    /// Import a zip, a loose .vmd, or a folder that already contains VMD files.
-    /// Everything found is stored; camera-only files land in the camera area.
+    /// 导入 zip、单个 .vmd，或已经装着 VMD 的目录。
+    /// 找到的全部入库；纯相机文件落到相机区。
     @discardableResult
     func importSource(url: URL, sourceName: String? = nil) throws -> ImportReport {
         let fileManager = FileManager.default
@@ -227,8 +227,8 @@ final class MMDMotionLibrary: ObservableObject {
         return report
     }
 
-    /// Import a package folder when a model is opened, so its bundled dance is
-    /// available from the canvas without importing the zip again.
+    /// 打开模型时顺带导入它的包目录，
+    /// 这样画布上就能用自带的舞，不必再导一次 zip。
     func importBundledMotions(in folder: URL, sourceName: String) {
         guard let enumerator = FileManager.default.enumerator(at: folder,
                                                               includingPropertiesForKeys: nil,
@@ -246,8 +246,8 @@ final class MMDMotionLibrary: ObservableObject {
         }
     }
 
-    /// One copy of a track, shared by every clip that references it. Four
-    /// VMDs in one pack used to duplicate the same 3 MB wav four times.
+    /// 一条轨道只存一份，被所有引用它的片段共享。
+    /// 一个包里四个 VMD 曾经把同一个 3 MB wav 存了四遍。
     private func storeAudio(_ url: URL) -> URL? {
         guard let data = try? Data(contentsOf: url) else { return nil }
         let hash = Self.contentHash(data)
@@ -279,8 +279,8 @@ final class MMDMotionLibrary: ObservableObject {
     }
 
     private static func contentHash(_ data: Data) -> String {
-        // FNV-1a over the file bytes: cheap, stable across launches, and good
-        // enough to recognise the same VMD inside two different zips.
+        // 对文件字节做 FNV-1a：便宜、跨启动稳定，
+        // 足够认出两个不同 zip 里的同一个 VMD。
         var hash: UInt64 = 0xcbf2_9ce4_8422_2325
         data.withUnsafeBytes { buffer in
             for byte in buffer {
@@ -290,7 +290,7 @@ final class MMDMotionLibrary: ObservableObject {
         return String(hash, radix: 16)
     }
 
-    // MARK: - Delete
+    // MARK: - 删除
 
     func delete(_ asset: MMDMotionAsset) {
         let folder = rootURL.appendingPathComponent(asset.id, isDirectory: true)
@@ -301,8 +301,8 @@ final class MMDMotionLibrary: ObservableObject {
         MMDLog.shared.info("Motion library removed \(asset.fileName)")
     }
 
-    /// Audio is shared, so it can only go when the last clip referencing it
-    /// is gone.
+    /// 音频是共享的，只有最后一个引用它的片段
+    /// 消失后才能删。
     private func removeUnreferencedAudio() {
         let referenced = Set(assets.compactMap { $0.relativeAudioPath })
         let folder = rootURL.appendingPathComponent("_audio", isDirectory: true)
@@ -326,8 +326,8 @@ final class MMDMotionLibrary: ObservableObject {
         }
     }
 
-    /// Per-session copies made by the old per-document importer. The library
-    /// keeps its own copy, so these can go when the canvas closes.
+    /// 旧版按文档导入留下的会话副本。库自己
+    /// 留了一份，画布关闭时这些可以清掉。
     func purgeSessionCache() {
         let fileManager = FileManager.default
         let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
@@ -341,7 +341,7 @@ final class MMDMotionLibrary: ObservableObject {
         }
     }
 
-    // MARK: - Persistence
+    // MARK: - 持久化
 
     private func sort() {
         assets.sort { lhs, rhs in

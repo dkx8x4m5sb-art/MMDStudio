@@ -7,13 +7,13 @@
 
 import Foundation
 
-/// Turns the names an MMD archive actually contains into a character folder
-/// name plus an outfit/prop label.
+/// 把 MMD 压缩包里真实存在的名字，变成一个角色目录名
+/// 加一个款式/道具标签。
 ///
-/// The hard part is that archive titles are named after the *series*
-/// (`3.0绳匠_by_绝区零_…` holds 玲 and 哲) while model headers are named after
-/// the person or the outfit (`蕾米埃尔-白`). Everything here is pure string
-/// work plus a file-size lookup, so it can be tested without UIKit.
+/// 难处在于压缩包标题按*系列*命名
+/// （`3.0绳匠_by_绝区零_…` 里装着玲和哲），而模型头部按
+/// 人物或款式命名（`蕾米埃尔-白`）。这里全是纯字符串
+/// 处理加一次文件大小查询，不依赖 UIKit，可以直接测。
 enum MMDCharacterNaming {
 
     struct Input {
@@ -25,15 +25,15 @@ enum MMDCharacterNaming {
     }
 
     struct Output {
-        /// Folder name: 蕾米埃尔, 玲, 哲.
+        /// 目录名：蕾米埃尔、玲、哲。
         var characterName: String
-        /// Row name inside that folder: 白, 泳装, 武器. Nil when the model is
-        /// the character itself.
+        /// 目录内的行名：白、泳装、武器。模型
+        /// 就是角色本身时为空。
         var variantName: String?
         var isProp: Bool
     }
 
-    // MARK: - Entry point
+    // MARK: - 入口
 
     static func classify(_ inputs: [Input]) -> [Output] {
         let known = Set(inputs.map { normalize(clean($0.displayName)) })
@@ -55,8 +55,8 @@ enum MMDCharacterNaming {
                                     packageLabel: packageLabel,
                                     known: known))
             }
-            // A bare prop name (武器.pmx / 扇子.pmx) says nothing about who it
-            // belongs to, so it follows the largest character in its archive.
+            // 一个光杆道具名（武器.pmx / 扇子.pmx）说明不了它
+            // 属于谁，所以它跟随包里最大的那个角色。
             var owner: String?
             var ownerSize = -1
             for (offset, index) in group.enumerated() where !parsed[offset].character.isEmpty {
@@ -84,16 +84,16 @@ enum MMDCharacterNaming {
                                           packageName: inputs[firstIndex].packagePath)
                     variant = label.isEmpty ? nil : label
                 }
-                // "菲欧尼皮肤" files under 菲欧尼 and the row says 皮肤, not a
-                // second identical 菲欧尼 line.
+                // 「菲欧尼皮肤」归到 菲欧尼 下，行名写 皮肤，
+                // 而不是又出现一行一模一样的 菲欧尼。
                 if variant == nil, character != fullName, fullName.hasPrefix(character) {
                     let suffixText = String(fullName.dropFirst(character.count))
                         .trimmingCharacters(in: CharacterSet(charactersIn: "-—·. /\\").union(.whitespaces))
                     variant = suffixText.isEmpty ? nil : suffixText
                 }
-                // Two exports of the same outfit must not read as two
-                // identical rows; the second falls back to the archive's own
-                // wording and finally to a counter.
+                // 同一套衣服的两次导出不能显示成两行
+                // 一模一样的名字；第二个退回到压缩包自己的
+                // 措辞，最后再退到计数器。
                 var row = variant ?? character
                 if used.contains(normalize(row)) {
                     let alternative = fullName.isEmpty || fullName == character ? "" : fullName
@@ -115,7 +115,7 @@ enum MMDCharacterNaming {
         return outputs
     }
 
-    // MARK: - Name parsing
+    // MARK: - 名字解析
 
     private struct Parsed {
         var character: String
@@ -141,17 +141,17 @@ enum MMDCharacterNaming {
         if isVariantWord(last) {
             return Parsed(character: head, variant: last, isProp: false)
         }
-        // "铃 2" is a second copy of 铃, not a character called 2.
+        // 「铃 2」是 铃 的第二份拷贝，不是有个角色叫 2。
         if last.allSatisfy({ $0.isNumber }) {
             return Parsed(character: head, variant: "v\(last)", isProp: false)
         }
-        // `玲` vs `绳匠 玲`: the tail is a name that exists on its own in the
-        // library, so the head is the series.
+        // 「玲」与「绳匠 玲」：尾巴是库里独立存在的名字，
+        // 所以前半截是系列。
         if known.contains(normalize(last)) {
             return Parsed(character: last, variant: nil, isProp: false)
         }
-        // The head repeats the archive name — 3.0绳匠_玲 — and that is a
-        // faction, not a person.
+        // 前半截重复了压缩包名 —— 3.0绳匠_玲 —— 那是
+        // 阵营，不是人物。
         if isFactionWord(head) || parts.dropLast().contains(where: isFactionWord) {
             return Parsed(character: last, variant: nil, isProp: false)
         }
@@ -169,8 +169,8 @@ enum MMDCharacterNaming {
             .filter { !$0.isEmpty }
     }
 
-    /// Strip the packaging noise authors add around a model name: version
-    /// prefixes, `_by_作者`, download hashes and doubled separators.
+    /// 去掉作者在模型名周围加的包装噪声：版本
+    /// 前缀、`_by_作者`、下载哈希和重复分隔符。
     static func clean(_ raw: String) -> String {
         var value = raw.precomposedStringWithCanonicalMapping
         let hasCJK = value.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }
@@ -211,7 +211,7 @@ enum MMDCharacterNaming {
         factionWords.contains(normalize(text))
     }
 
-    /// Weapons and hand props. A match folds the model under its character.
+    /// 武器和手持道具。命中后模型归到它的角色下。
     private static let propWords: Set<String> = [
         "武器", "刀", "剑", "槍", "枪", "弓", "扇", "扇子", "伞", "傘", "盾", "杖", "锤", "鎚",
         "斧", "匕首", "双刀", "太刀", "长枪", "道具", "配饰", "配件", "背包", "帽子", "眼镜",
@@ -221,7 +221,7 @@ enum MMDCharacterNaming {
         "hat", "glasses", "mask", "bag", "backpack",
     ]
 
-    /// Outfits and alternate forms of the *same* person.
+    /// 同一个人*同一角色*的服装与形态。
     private static let variantWords: Set<String> = [
         "白", "黑", "泳装", "泳衣", "死库水", "常服", "私服", "制服", "校服", "战斗服", "礼服",
         "婚纱", "和服", "浴衣", "睡衣", "皮肤", "换色", "异色", "觉醒", "初始", "破损", "战损",
@@ -230,8 +230,8 @@ enum MMDCharacterNaming {
         "白发", "黑发", "金发", "ver", "ver2", "v2", "alt", "default", "normal",
     ]
 
-    /// Series and faction names that appear in archive titles. A match is
-    /// dropped from the folder name so 绳匠 never becomes a character.
+    /// 压缩包标题里出现的系列与阵营名。命中就从
+    /// 目录名里丢掉，绳匠 因此永远不会变成一个角色。
     private static let factionWords: Set<String> = [
         "绳匠", "絕區零", "绝区零", "崩坏", "崩壞", "星穹铁道", "星穹鐵道", "原神", "鸣潮",
         "明日方舟", "蔚蓝档案", "碧蓝航线", "少女前线", "胜利女神", "尘白禁区", "深空之眼",
@@ -267,8 +267,8 @@ enum MMDCharacterNaming {
         return String(stem.prefix(20))
     }
 
-    /// The header often only repeats the character while the file name carries
-    /// the outfit (`蕾米埃尔_白`); keep whichever says more.
+    /// 文件头常常只重复角色名，款式写在文件名里
+    /// （`蕾米埃尔_白`）；哪个信息多就留哪个。
     static func preferredDisplayName(header: String, fileName: String, packageName: String) -> String {
         var headerName = clean(header)
         var file = clean(fileName)

@@ -28,8 +28,8 @@ struct SceneUniforms {
     float4 worldParams;     // x: wrap scattering, y: world intensity
     float4 worldSkyColor;
     float4 worldGroundColor;
-    // x: outline width in pixels, y: specular strength, z: skin scatter,
-    // w: shadow hue shift.
+    // x: 描边宽度（像素），y: 高光强度，z: 皮肤透光，
+    // w: 阴影色相偏移。
     float4 renderParams;
     Light lights[8];
 };
@@ -42,8 +42,8 @@ struct MaterialUniforms {
     float4 textureTint;
     float4 sphereTint;
     float4 toonTint;
-    // x: specular strength multiplier, y: metalness, z: skin flag,
-    // w: outline width multiplier.
+    // x: 高光强度倍率，y: 金属度，z: 皮肤标记，
+    // w: 描边宽度倍率。
     float4 toonControl;
     float edgeSize;
     float alphaTest;
@@ -68,8 +68,8 @@ struct MeshVertexOut {
     float3 viewPosition;
 };
 
-/// Skinning helpers. Shared by the body pass and the outline pass so both see
-/// exactly the same deformed surface.
+/// 蒙皮辅助函数。主体与描边两个 pass 共用，
+/// 保证两边看到的形变表面完全一致。
 static inline float4 mmdSkinPosition(uint vid,
                                      float3 position,
                                      device const uint4 *boneIndices,
@@ -80,29 +80,29 @@ static inline float4 mmdSkinPosition(uint vid,
     uint4 bi = boneIndices[vid];
     float4 w = weights[vid];
     float4 center = sdef[vid * 3 + 0];
-    // SDEF is opt-in. The sphere solve is only correct when the converter
-    // wrote C/R0/R1 in model space; several popular exporters write bone-local
-    // or zero values, and using them tears skirts and cuffs apart.
+    // SDEF 是可选路径。只有转换器把 C/R0/R1 写在模型空间时，
+    // 球面解算才正确；几个流行导出器写成骨骼局部值或零，
+    // 用它们会把裙子和袖口撕开。
     if (center.w > 0.5 && sdefEnabled > 0.5) {
-        // SDEF: the vertex rides a sphere whose centre follows both bones.
-        // Treating these as plain BDEF2 (the old behaviour) collapsed skirts
-        // and cuffs into the body while the legs moved.
+        // SDEF：顶点骑在一个随两根骨骼移动的球面上。
+        // 把它们当普通 BDEF2 处理（旧行为）会让裙子和袖口
+        // 在腿动的时候塌进身体。
         float4 r0 = sdef[vid * 3 + 1];
         float4 r1 = sdef[vid * 3 + 2];
-        // SDEF deforms the vertex on a sphere centred at C. The previous
-        // version transformed `v - C` with a matrix that still carries the
-        // bone translation, so at rest the whole patch slid by -C (tens of
-        // centimetres) and skirts, cuffs and chest caved into the body.
+        // SDEF 把顶点形变到以 C 为球心的球面上。上一版
+        // 用仍带骨骼平移的矩阵去变换 `v - C`，
+        // 静止时整片面片就平移了 -C（几十厘米），
+        // 裙子、袖口和胸口全凹进身体里。
         //
-        // Weight the sphere's centre and a pure rotation, then rotate the
-        // offset. At rest (all palettes identity) this reduces to exactly v.
+        // 给球心加权、只取纯旋转，再旋转偏移量。
+        // 静止时（所有 palette 为单位阵）正好还原成 v。
         float4x4 m0 = palette[bi.x];
         float4x4 m1 = palette[bi.y];
         float3 center0 = (m0 * float4(center.xyz + r0.xyz, 1.0)).xyz;
         float3 center1 = (m1 * float4(center.xyz + r1.xyz, 1.0)).xyz;
         float3 sphereCenter = w.x * center0 + w.y * center1;
-        // Metal has no float4x4 -> float3x3 cast; take the upper-left 3x3 by
-        // columns so the translation stays behind.
+        // Metal 没有 float4x4 → float3x3 的转换；按列取
+        // 左上 3x3，把平移留在外面。
         float3x3 rot0 = float3x3(m0[0].xyz, m0[1].xyz, m0[2].xyz);
         float3x3 rot1 = float3x3(m1[0].xyz, m1[1].xyz, m1[2].xyz);
         float3x3 rotation = w.x * rot0 + w.y * rot1;
@@ -136,7 +136,7 @@ static inline float3 mmdSkinNormal(uint vid,
          + w.w * (palette[bi.w] * float4(normal, 0.0)).xyz;
 }
 
-// MARK: - Mesh
+// MARK: - 网格
 
 vertex MeshVertexOut mmd_mesh_vertex(uint vid [[vertex_id]],
                                      device const float3 *positions [[buffer(0)]],
@@ -166,9 +166,9 @@ vertex MeshVertexOut mmd_mesh_vertex(uint vid [[vertex_id]],
     return out;
 }
 
-/// Cel ramp with antialiased steps. `fwidth` keeps the terminator one pixel
-/// wide at any resolution, which is what stops a two-tone shader from looking
-/// like a jagged stencil on hair and fingers.
+/// 带抗锯齿台阶的卡通 ramp。`fwidth` 让明暗交界
+/// 在任何分辨率下都保持一像素宽，两色着色才不会
+/// 在头发和手指上看起来像锯齿模板。
 static inline float mmdToonRamp(float value, float steps, float softness) {
     float scaled = clamp(value, 0.0, 1.0) * steps;
     float level = floor(scaled);
@@ -201,7 +201,7 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
     }
     float3 V = normalize(scene.cameraPosition.xyz - in.worldPosition);
 
-    // Sphere maps are authored per material and stay in every mode.
+    // 球面贴图按材质编写，任何模式下都保留。
     if ((mat.flags & kFlagHasSphere) != 0) {
         float2 sphereUV = in.viewNormal.xy;
         sphereUV = sphereUV * 0.5 + 0.5;
@@ -226,9 +226,9 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
     float mainNdl = 0.0;
     float3 keyLightColor = scene.lightColor.rgb;
 
-    // Evaluate up to eight user lights. The toon modes keep a single key
-    // light (the first sun) for the ramp and use the rest as ambient/fill, so
-    // a fill light never creates a second hard terminator.
+    // 最多求值八盏用户光源。卡通模式只让第一束主光
+    // 参与 ramp，其余当环境/补光，补光因此
+    // 不会造出第二个硬交界。
     bool toonOnly = mat.renderMode == 0;
     bool mainSunSet = false;
     int lightCount = min(8, max(0, int(scene.lightCount.x)));
@@ -313,14 +313,14 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
         color += mat.specular.rgb * pow(max(dot(N, normalize(L + V)), 0.0),
                                         max(mat.specular.w, 1.0)) * 0.35 + specularSum;
     } else {
-        // MARK: Cel shading (Genshin-style)
+        // MARK: 卡通着色（原神风格）
         //
-        // The reference shader (GenshinCelShaderURP) builds its look from a
-        // small number of hard decisions rather than from a physically based
-        // light integral: one quantized key-light ramp, a hue-shifted shadow
-        // that keeps saturation, a ladder highlight, a rim term that only
-        // appears on the lit side, and an inverted-hull outline. This is that
-        // structure, driven by the PMX material data we actually have.
+        // 参考着色器（GenshinCelShaderURP）的观感来自
+        // 少量硬性判断，而不是物理光照积分：
+        // 一条量化的主光 ramp、保留饱和度的色相偏移阴影、
+        // 阶梯高光、只出现在受光侧的轮廓光，
+        // 以及反向外壳描边。这里就是那套结构，
+        // 由我们真正拥有的 PMX 材质数据驱动。
         float steps = max(2.0, scene.lightCount.w);
         float softness = clamp(scene.toonParams.x, 0.0, 0.45);
         float lift = clamp(scene.toonParams.y, 0.0, 1.0);
@@ -333,33 +333,33 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
 
         float litRaw = mainNdl * 0.5 + 0.5;
         float ramp = mmdToonRamp(litRaw, steps, softness);
-        // Authored toon ramps still carry the model's intent; blend them in
-        // without letting them flatten the style presets.
+        // 作者写的 toon ramp 仍带着模型的原意；
+        // 把它混进来，但不要让它抹平风格预设。
         if ((mat.flags & kFlagHasToon) != 0) {
             float authored = clamp(toonMap.sample(clampSampler, float2(litRaw, 0.5)).r
                                    * mat.toonTint.r, 0.0, 1.0);
             ramp = mix(ramp, authored, 0.30);
         }
-        // Metal reads as "always somewhat lit" on its highlight side.
+        // 金属在受光侧读起来要「总有点亮」。
         ramp = mix(ramp, max(ramp, 0.55), metalness * 0.5);
 
-        // Shadow keeps the albedo hue instead of turning grey: multiply by a
-        // tinted factor, then lift the floor so cloth does not crush.
-        // `mix(0.42, 0.80, lift)` kept the shadow at ~95% of the albedo at the
-        // default lift, which read as a grey wash instead of a cel shadow.
+        // 阴影保留 albedo 的色相而不是发灰：乘一个带色的
+        // 系数，再把地板抬起来，布料才不会被压死。
+        // `mix(0.42, 0.80, lift)` 在默认 lift 下把阴影留在
+        // albedo 的 ~95%，看起来是一层灰浆而不是卡通阴影。
         float3 shadowColor = base.rgb * mix(float3(1.0), shadowTint, tintStrength)
                            * (0.35 + 0.60 * lift);
         float3 litColor = base.rgb * (0.97 + 0.06 * ramp);
-        // Shadow term is tinted by the key light so a warm sun and a cold fill
-        // produce different shadow temperatures.
+        // 阴影项按主光染色，暖阳与冷补光
+        // 因此产生不同的阴影色温。
         litColor *= mix(float3(1.0), keyLightColor, 0.35);
 
         color = mix(shadowColor, litColor, ramp);
         color += base.rgb * ambientLight * 0.30;
 
-        // Ladder highlight. A hard specular step is the single strongest
-        // "anime" cue after the ramp; MMD materials already carry the colour
-        // and power so it needs no extra authoring.
+        // 阶梯高光。硬边高光是 ramp 之后最强的
+        // 「动画感」信号；MMD 材质本来就带颜色和
+        // 幂次，不需要额外作者设定。
         float3 H = normalize(L + V);
         float specPower = max(mat.specular.w, 1.0);
         float spec = pow(max(dot(N, H), 0.0), specPower);
@@ -369,8 +369,8 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
         color += mat.specular.rgb * keyLightColor * specMask * specScale
                * (0.35 + 0.65 * specFacing) * (1.0 + metalness);
 
-        // Rim light on the lit silhouette. Genshin keeps it off the shadow
-        // side, which is what makes it read as a contour instead of a fog.
+        // 受光轮廓上的边缘光。原神在背光侧关掉它，
+        // 这才让它读作轮廓线而不是一层雾。
         float fresnel = 1.0 - saturate(dot(N, V));
         float rim = smoothstep(0.55, 0.98, fresnel);
         rim *= saturate(ramp * 1.6 - 0.15);
@@ -384,7 +384,7 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
         }
         color += rimTint * rim * rimAmount * 0.85;
 
-        // Skin and thin cloth bleed warm light through the terminator.
+        // 皮肤和薄布在交界处透出暖光。
         float scatter = isSkin * clamp(scene.renderParams.z, 0.0, 1.0);
         if (scatter > 0.001) {
             float bleed = (1.0 - ramp) * smoothstep(0.05, 0.75, litRaw) * (0.35 + 0.65 * fresnel);
@@ -392,7 +392,7 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
         }
     }
 
-    // Photo / camera grade, applied to every mode.
+    // 照片/相机调色，所有模式都套用。
     float style = scene.params.w;
     float styleSaturation = style < 0.5 ? 1.0 : (style < 1.5 ? 1.12 : (style < 2.5 ? 1.04 : 1.22));
     float saturation = clamp(scene.ambientColor.a * styleSaturation, 0.55, 1.75);
@@ -413,7 +413,7 @@ fragment float4 mmd_mesh_fragment(MeshVertexOut in [[stage_in]],
     return float4(color, alpha);
 }
 
-// MARK: - Edge (inverted hull, front faces culled, constant pixel width)
+// MARK: - 描边（反向外壳，剔除正面，恒定像素宽）
 
 struct EdgeVertexOut {
     float4 position [[position]];
@@ -436,13 +436,13 @@ vertex EdgeVertexOut mmd_edge_vertex(uint vid [[vertex_id]],
     float4 clip = scene.viewProjection * world;
     float3 viewNormal = normalize((scene.view * float4(skinnedNormal, 0.0)).xyz);
 
-    // Push the hull out in screen space so the line weight stays identical
-    // whether the camera is 3 units or 30 units away.
+    // 在屏幕空间把外壳推出去，线宽因此
+    // 在相机 3 单位或 30 单位远时都一致。
     float2 direction = viewNormal.xy;
     float magnitude = length(direction);
     direction = magnitude > 0.0001 ? direction / magnitude : float2(0.0, 1.0);
-    // Width is specified against a 1080p frame so the line keeps the same
-    // relative weight on a phone and on a 4K export.
+    // 宽度按 1080p 画面标定，线条在手机和
+    // 4K 导出上保持同样的相对粗细。
     float resolutionScale = max(0.5, scene.viewportSize.y / 1080.0);
     float pixels = max(0.4, scene.renderParams.x * resolutionScale)
                  * clamp(mat.edgeSize, 0.25, 4.0)
@@ -460,7 +460,7 @@ fragment float4 mmd_edge_fragment(constant MaterialUniforms &mat [[buffer(0)]]) 
     return float4(mat.edgeColor.rgb, 1.0);
 }
 
-// MARK: - Ground shadow
+// MARK: - 地面阴影
 
 struct ShadowOut {
     float4 position [[position]];
@@ -489,7 +489,7 @@ fragment float4 mmd_shadow_fragment() {
     return float4(0.0, 0.0, 0.0, 0.55);
 }
 
-// MARK: - Grid
+// MARK: - 网格线
 
 struct OverlayVertex {
     float3 position;
@@ -537,7 +537,7 @@ fragment float4 mmd_grid_fragment(OverlayOut in [[stage_in]],
     return float4(color, alpha);
 }
 
-// MARK: - Bone overlay
+// MARK: - 骨骼叠加
 
 vertex OverlayOut mmd_overlay_vertex(uint vid [[vertex_id]],
                                      device const OverlayVertex *vertices [[buffer(0)]],
@@ -554,7 +554,7 @@ fragment float4 mmd_overlay_fragment(OverlayOut in [[stage_in]]) {
     return in.color;
 }
 
-// MARK: - Studio backdrop
+// MARK: - 摄影棚背景
 
 struct BackdropUniforms {
     float4 topColor;
@@ -573,9 +573,9 @@ vertex BackdropOut mmd_backdrop_vertex(uint vid [[vertex_id]]) {
     if (vid == 1) { p = float2(3.0, -1.0); }
     if (vid == 2) { p = float2(-1.0, 3.0); }
     BackdropOut out;
-    // Push the backdrop to the far plane; depth compare is lessEqual and the
-    // depth buffer was cleared to 1.0, so it still covers the clear color but
-    // can never occlude the character.
+    // 把背景推到远平面；深度比较是 lessEqual，
+    // 而且深度缓冲已清成 1.0，所以它仍然盖住清屏色，
+    // 但永远不会遮挡角色。
     out.position = float4(p, 1.0, 1.0);
     out.uv = p * 0.5 + 0.5;
     return out;
@@ -595,8 +595,8 @@ fragment float4 mmd_backdrop_fragment(BackdropOut in [[stage_in]],
     return float4(max(color, 0.0), 1.0);
 }
 
-// Optional imported backdrop image. Fills the frame with aspect-fill and
-// keeps the same far-plane depth as the gradient backdrop.
+// 可选的导入背景图。按 aspect-fill 铺满画面，
+// 深度与渐变背景一样留在远平面。
 fragment float4 mmd_backdrop_image_fragment(BackdropOut in [[stage_in]],
                                             texture2d<float> image [[texture(0)]],
                                             constant float4 &params [[buffer(0)]]) {
@@ -615,7 +615,7 @@ fragment float4 mmd_backdrop_image_fragment(BackdropOut in [[stage_in]],
     return float4(color.rgb, 1.0);
 }
 
-// MARK: - Contact shadow
+// MARK: - 接触阴影
 
 struct ContactShadowOut {
     float4 position [[position]];

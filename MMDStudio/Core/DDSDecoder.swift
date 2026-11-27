@@ -7,9 +7,9 @@
 
 import Foundation
 
-/// Minimal DDS decoder for the formats commonly found in MMD model rips:
-/// uncompressed RGB(A), DXT1/BC1, DXT3/BC2 and DXT5/BC3. Only the top mip is
-/// decoded, which is what the viewport needs.
+/// 精简 DDS 解码器，覆盖 MMD 模型包里常见的格式：
+/// 未压缩 RGB(A)、DXT1/BC1、DXT3/BC2、DXT5/BC3。
+/// 只解顶层 mip，视口只需要这个。
 enum MMDDDSDecoder {
 
     static func decode(_ data: Data) -> MMDTextureLibrary.DecodedImage? {
@@ -49,7 +49,7 @@ enum MMDDDSDecoder {
                                          width: width, height: height, format: format)
         }
 
-        // Uncompressed RGB/RGBA with channel masks.
+        // 带通道掩码的未压缩 RGB/RGBA。
         if pfFlags & 0x40 != 0, rgbBits == 24 || rgbBits == 32 {
             let bytesPerPixel = rgbBits / 8
             let pitch = max(width * bytesPerPixel, Int(readU32(bytes, 20)))

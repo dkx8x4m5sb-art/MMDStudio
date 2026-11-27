@@ -9,11 +9,11 @@ import Foundation
 import CoreFoundation
 import simd
 
-/// Legacy PMD (Polygon Model Data) reader. PMD is the pre-PMX MMD model
-/// format: fixed-width Shift-JIS names, 16-bit vertex indices and up to two
-/// bone weights per vertex. The parser converts it into the same PMXModel
-/// representation used by the PMX pipeline so the existing renderer, physics,
-/// IK and motion retargeting work unchanged.
+/// 旧版 PMD（Polygon Model Data）读取器。PMD 是 PMX
+/// 之前的 MMD 模型格式：定宽 Shift-JIS 名字、16 位顶点索引、
+/// 每顶点最多两根骨骼权重。解析器把它转成与 PMX
+/// 管线相同的 PMXModel 表示，现有的渲染、物理、
+/// IK 与动作重定向都不用改。
 final class PMDParser {
 
     private struct Reader {
@@ -86,7 +86,7 @@ final class PMDParser {
         self.reader = Reader(data: data)
     }
 
-    /// Header-only name read used by the library list before a full parse.
+    /// 模型库列表在完整解析前用的「只读名字」。
     static func readDisplayName(data: Data) -> String? {
         guard data.count >= 27 else { return nil }
         let bytes = Array(data[7..<27])
@@ -128,8 +128,8 @@ final class PMDParser {
         let iks = try parseIK()
         let morphs = try parseMorphs(vertexCount: vertices.count)
         try parseDisplayInfo()
-        // Optional sections. A truncated PMD (or one saved without English /
-        // toon / physics data) is still usable.
+        // 可选段。截断的 PMD（或没存英文 /
+        // toon / 物理数据的）仍然可用。
         if reader.remaining > 0 { try parseEnglishAndToon(boneCount: bones.count, morphCount: faceDisplayCountValue) }
         let rigidBodies = reader.remaining > 0 ? (try parseRigidBodies(boneCount: bones.count)) : []
         let joints = reader.remaining > 0 ? (try parseJoints(bodyCount: rigidBodies.count)) : []
@@ -224,7 +224,7 @@ final class PMDParser {
             let a = UInt32(try reader.u16("索引"))
             let b = UInt32(try reader.u16("索引"))
             let c = UInt32(try reader.u16("索引"))
-            // PMD is left-handed; flip one edge to preserve front faces.
+            // PMD 是左手系；翻转一条边以保住正面。
             result.append(a)
             result.append(c)
             result.append(b)
@@ -253,8 +253,8 @@ final class PMDParser {
         var textureNames: [String] = []
         result.reserveCapacity(count)
         for _ in 0..<count {
-            // The PMD material record is exactly 70 bytes; parse it as a
-            // packed block so field offsets stay unambiguous.
+            // PMD 材质记录正好 70 字节；当成一个
+            // 紧凑块解析，字段偏移不会有歧义。
             var record: [UInt8] = []
             record.reserveCapacity(70)
             for _ in 0..<70 { record.append(try reader.u8("材质记录")) }
@@ -440,7 +440,7 @@ final class PMDParser {
             reader.offset += min(20 * max(0, morphCount), reader.remaining)
             reader.offset += min(50 * boneDisplayNameCountValue, reader.remaining)
         }
-        // Ten built-in toon names, 100 bytes each. Some files omit this table.
+        // 十张内置 toon 名字表，每条 100 字节。有些文件省略这张表。
         if reader.remaining >= 1000 { reader.offset += 1000 }
     }
 

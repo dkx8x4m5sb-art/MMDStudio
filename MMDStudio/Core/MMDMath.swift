@@ -20,7 +20,7 @@ extension SIMD3 where Scalar == Float {
         simd_length(self)
     }
 
-    /// Normalized vector, returns zero for degenerate input.
+    /// 归一化向量，退化输入返回零。
     var unit: SIMD3<Float> {
         let len = simd_length(self)
         if len < 1e-6 { return .zero }
@@ -68,7 +68,7 @@ extension simd_float4x4 {
     }
 }
 
-// MARK: - Quaternion helpers
+// MARK: - 四元数辅助
 
 let mmdIdentityQuaternion = simd_quatf(angle: 0, axis: SIMD3<Float>(0, 1, 0))
 
@@ -121,7 +121,7 @@ func quatSlerp(_ a: simd_quatf, _ b: simd_quatf, _ t: Float) -> simd_quatf {
     return quatNormalize(q)
 }
 
-/// Euler angles in radians, applied as Rz * Ry * Rx (the same convention used by VMD camera).
+/// 欧拉角，单位弧度，按 Rz * Ry * Rx 施加（与 VMD 相机同一约定）。
 func quatFromEuler(_ euler: SIMD3<Float>) -> simd_quatf {
     let qx = simd_quatf(angle: euler.x, axis: SIMD3<Float>(1, 0, 0))
     let qy = simd_quatf(angle: euler.y, axis: SIMD3<Float>(0, 1, 0))
@@ -151,7 +151,7 @@ func quatFromRotationMatrix(_ m: simd_float3x3) -> simd_quatf {
     return quatNormalize(q)
 }
 
-/// Decompose a rotation matrix expressed as Rz * Ry * Rx into XYZ Euler angles (radians).
+/// 把 Rz * Ry * Rx 表示的旋转矩阵分解成 XYZ 欧拉角（弧度）。
 func quatToEuler(_ quat: simd_quatf) -> SIMD3<Float> {
     let m = simd_float4x4(quaternion: quat).rotationMatrix
     let m00 = m.columns.0.x, m10 = m.columns.0.y, m20 = m.columns.0.z
@@ -164,7 +164,7 @@ func quatToEuler(_ quat: simd_quatf) -> SIMD3<Float> {
     return SIMD3<Float>(atan2f(-m12, m11), atan2f(-m20, sy), 0)
 }
 
-/// Shortest-arc rotation that maps vector a onto vector b.
+/// 把向量 a 转到向量 b 的最短弧旋转。
 func quatBetween(_ a: SIMD3<Float>, _ b: SIMD3<Float>) -> simd_quatf {
     let u = a.unit
     let v = b.unit
@@ -172,7 +172,7 @@ func quatBetween(_ a: SIMD3<Float>, _ b: SIMD3<Float>) -> simd_quatf {
     let dot = max(-1, min(1, simd_dot(u, v)))
     if dot > 0.99999 { return mmdIdentityQuaternion }
     if dot < -0.99999 {
-        // Pick any perpendicular axis.
+        // 任取一根垂直轴。
         let axis = abs(u.x) < 0.9 ? simd_cross(u, SIMD3<Float>(1, 0, 0)) : simd_cross(u, SIMD3<Float>(0, 1, 0))
         return simd_quatf(angle: .pi, axis: axis.unit)
     }
@@ -187,7 +187,7 @@ func quatClampAngle(_ q: simd_quatf, maxAngle: Float) -> simd_quatf {
     return simd_quatf(angle: maxAngle, axis: axis)
 }
 
-// MARK: - Projection
+// MARK: - 投影
 
 func mmdPerspective(fovYRadians: Float, aspect: Float, near: Float, far: Float) -> simd_float4x4 {
     let f = 1 / tanf(max(fovYRadians, 0.01) * 0.5)
@@ -212,7 +212,7 @@ func mmdLookAt(eye: SIMD3<Float>, center: SIMD3<Float>, up: SIMD3<Float>) -> sim
     ))
 }
 
-// MARK: - Bounds
+// MARK: - 包围盒
 
 struct MMDBox {
     var minPoint: SIMD3<Float>
@@ -242,9 +242,9 @@ struct MMDBox {
     }
 }
 
-// MARK: - Animation curves
+// MARK: - 动画曲线
 
-/// A VMD-style cubic bezier easing curve. Control points are normalized to 0...1.
+/// VMD 风格的三次贝塞尔缓动曲线。控制点归一化到 0...1。
 struct MMDBezierCurve: Equatable {
     var x1: Float
     var y1: Float
@@ -278,10 +278,10 @@ struct MMDBezierCurve: Equatable {
         return 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t * t * t
     }
 
-    /// Returns the interpolated progress for normalized time x (0...1).
+    /// 返回归一化时间 x（0...1）对应的插值进度。
     func value(at x: Float) -> Float {
         let progress = max(0, min(1, x))
-        // Control points on the diagonal describe a perfectly linear curve.
+        // 对角线上的控制点表示完全线性的曲线。
         if abs(x1 - y1) < 0.0001 && abs(x2 - y2) < 0.0001 { return progress }
         var low: Float = 0
         var high: Float = 1

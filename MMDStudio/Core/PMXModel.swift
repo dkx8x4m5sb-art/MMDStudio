@@ -8,7 +8,7 @@
 import Foundation
 import simd
 
-// MARK: - Model data structures
+// MARK: - 模型数据结构
 
 struct PMXVertex {
     var position: SIMD3<Float>
@@ -17,10 +17,10 @@ struct PMXVertex {
     var boneIndices: SIMD4<UInt32>
     var boneWeights: SIMD4<Float>
     var edgeScale: Float
-    /// 0 = BDEF1, 1 = BDEF2, 2 = BDEF4, 3 = SDEF, 4 = QDEF.
+    /// 0 = BDEF1，1 = BDEF2，2 = BDEF4，3 = SDEF，4 = QDEF。
     var skinType: UInt8 = 0
-    /// SDEF sphere centre plus the two bone-relative radii. Only valid when
-    /// `skinType == 3`; the renderer uploads them as a third vertex stream.
+    /// SDEF 球心加上两个骨骼相关半径。只有
+    /// `skinType == 3` 时有效；渲染器把它们作为第三条顶点流上传。
     var sdefCenter: SIMD3<Float> = .zero
     var sdefRadius0: SIMD3<Float> = .zero
     var sdefRadius1: SIMD3<Float> = .zero
@@ -126,9 +126,9 @@ struct PMXJoint {
     var bodyB: Int
     var position: SIMD3<Float>
     var rotation: SIMD3<Float>
-    /// Travel and swing bounds, radians for the angular pair. Bullet's 6DOF
-    /// constraint needs both or the joint is a free hinge and the chain falls
-    /// apart; the parser used to read these four vectors and throw them away.
+    /// 平移与摆动边界，角度那一对用弧度。Bullet 的 6DOF
+    /// 约束两者都要，否则关节就是自由铰链，链子会散；
+    /// 解析器以前读了这四个向量又丢掉。
     var limitLower: SIMD3<Float> = SIMD3<Float>(-1000, -1000, -1000)
     var limitUpper: SIMD3<Float> = SIMD3<Float>(1000, 1000, 1000)
     var limitLowerAngle: SIMD3<Float> = SIMD3<Float>(-3.14159265, -3.14159265, -3.14159265)
@@ -186,12 +186,12 @@ enum MMDLoadError: LocalizedError {
     }
 }
 
-/// Shared geometry hygiene for every loader. PMX and PMD both hand the mesh
-/// builder a flat triangle list that is indexed straight into the vertex array,
-/// and neither format guarantees the indices are in range — converted or merged
-/// models regularly contain a handful of stale values. Dropping the affected
-/// triangles keeps the model openable and leaves every material's index range
-/// contiguous, which the renderer relies on.
+/// 所有加载器共用的几何清洗。PMX 和 PMD 都交给
+/// 网格构建器一份平坦三角形列表，索引直接
+/// 打进顶点数组，而两种格式都不保证索引在范围内 ——
+/// 转换或合并过的模型常带几个过期值。丢掉受影响的
+/// 三角形，模型仍能打开，每个材质的索引范围
+/// 也保持连续，渲染器依赖这一点。
 enum MMDIndexSanitary {
 
     @discardableResult

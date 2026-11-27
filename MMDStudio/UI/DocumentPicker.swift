@@ -2,12 +2,12 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
-/// A reliable UIKit document picker.
+/// 可靠的 UIKit 文档选择器。
 ///
-/// SwiftUI's `.fileImporter` can appear to do nothing for some iCloud/Files
-/// providers on recent iOS versions. Using `UIDocumentPickerViewController`
-/// with `asCopy: true` gives us local, security-scope-free URLs and also lets
-/// the user select folders and ZIP archives.
+/// 在近几个 iOS 版本里，SwiftUI 的 `.fileImporter` 对某些
+/// iCloud/Files 提供方看起来毫无反应。改用
+/// `UIDocumentPickerViewController` 配合 `asCopy: true`，
+/// 拿到本地、无需安全作用域的 URL，还让用户能选目录和 ZIP。
 struct MMDDocumentPicker: UIViewControllerRepresentable {
 
     let contentTypes: [UTType]

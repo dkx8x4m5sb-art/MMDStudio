@@ -8,7 +8,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Shared row for a library clip.
+/// 库片段的共享行。
 private struct MotionAssetRow: View {
     let asset: MMDMotionAsset
     var isCurrent = false
@@ -46,10 +46,10 @@ private struct MotionAssetRow: View {
     }
 }
 
-// MARK: - Canvas picker
+// MARK: - 画布选择器
 
-/// Picks a clip for the open model. The motion and the camera are chosen
-/// separately because MMD authors ship them as separate files.
+/// 为当前打开的模型挑片段。动作与相机分开选，
+/// 因为 MMD 作者就是把它们当两个文件发的。
 struct MotionLibraryPicker: View {
     @ObservedObject var document: MMDModelDocument
     @ObservedObject private var library = MMDMotionLibrary.shared
@@ -187,9 +187,9 @@ struct MotionLibraryPicker: View {
     }
 }
 
-// MARK: - Library management
+// MARK: - 库管理
 
-/// The "待用区": every imported clip, motions and cameras kept apart.
+/// 「待用区」：所有导入的片段，动作与相机分开存放。
 struct MotionLibraryView: View {
     @ObservedObject private var library = MMDMotionLibrary.shared
     @State private var showImporter = false

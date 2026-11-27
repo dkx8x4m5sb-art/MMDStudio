@@ -280,10 +280,10 @@ private struct LogRow: View {
     }
 }
 
-/// Wrapper for the system share sheet. The share sheet used to come up empty
-/// on the first tap because SwiftUI could present it before the item array had
-/// propagated; callers now pass a `SharePayload` through `.sheet(item:)` so the
-/// controller is only built once non-empty items exist.
+/// 系统分享面板的包装。以前第一次点击时面板是空的，
+/// 因为 SwiftUI 可能在条目数组传播前就呈现它；
+/// 现在调用方通过 `.sheet(item:)` 传 `SharePayload`，
+/// 只有非空条目时才构建控制器。
 struct SharePayload: Identifiable {
     let id = UUID()
     let items: [Any]

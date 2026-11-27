@@ -19,7 +19,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     @Published var model: PMXModel
     @Published var modelRevision: Int = 1
     @Published var baseDirectory: URL
-    /// Optional package root used as a secondary texture search root.
+    /// 可选的包根目录，作为贴图的次级查找根。
     @Published var fallbackRoot: URL?
     @Published var materialSettings: [MMDMaterialSettings]
     @Published var morphWeights: [Float]
@@ -43,21 +43,21 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     @Published var motion: VMDMotion?
     @Published var motionName: String = ""
     @Published var useCameraMotion: Bool = false
-    /// A camera-only VMD chosen from the motion library. Kept apart from
-    /// `motion` so picking a different shot never replaces the dance.
+    /// 从动作库选中的纯相机 VMD。它与 `motion` 分开存放，
+    /// 换个镜头就不会把舞蹈顶掉。
     @Published var cameraMotion: VMDMotion?
     @Published var cameraMotionName: String = ""
-    /// Set while a video export owns the renderer. Physics then advances by a
-    /// fixed 1/fps step instead of the wall-clock delta, so a 60 fps render
-    /// simulates the same cloth on every run and does not jitter when a frame
-    /// takes longer than 16 ms to encode.
+    /// 视频导出接管渲染器时置位。物理改按固定的
+    /// 1/fps 步长推进，而不是用墙钟增量，这样 60 fps 的渲染
+    /// 每次模拟出的布料一致，单帧编码超过 16 ms 时
+    /// 也不会抖。
     var isExporting: Bool = false
     @Published var currentFrame: Float = 0 {
         didSet { if renderFrame != currentFrame { renderFrame = currentFrame } }
     }
-    /// Frame the renderer should draw. Video export drives this directly
-    /// instead of `currentFrame`, so a 60 fps export does not rebuild the
-    /// whole SwiftUI tree sixty times a second and starve the GPU.
+    /// 渲染器这一帧该画什么。视频导出直接驱动它，
+    /// 而不是 `currentFrame`，这样 60 fps 导出不会每秒重建
+    /// 六十次整棵 SwiftUI 树，把 GPU 饿死。
     var renderFrame: Float = 0
     @Published var isPlaying: Bool = false
     @Published var loopPlayback: Bool = true
@@ -67,22 +67,22 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     @Published var motionMappingNote: String = ""
     @Published var motionAudioName: String = ""
     @Published var missingTextureNames: [String] = []
-    /// Off by default: most models already ship mouth morphs and almost every
-    /// dance clip animates them, so an extra audio envelope reads as a
-    /// twitching jaw. The choice is remembered per app, not per model.
+    /// 默认关闭：多数模型自带口型 Morph，几乎每支舞也都会驱动它，
+    /// 再叠一层音频包络就成了下巴抽动。这个选择按 App 记住，
+    /// 不按模型记。
     @Published var lipSyncEnabled = UserDefaults.standard.bool(forKey: MMDModelDocument.lipSyncKey) {
         didSet { UserDefaults.standard.set(lipSyncEnabled, forKey: Self.lipSyncKey) }
     }
-    /// True when the current clip animates the mouth itself, which is why the
-    /// audio envelope was switched off automatically.
+    /// 当前片段自己带动嘴部时为 true ——
+    /// 音频包络就是因此被自动关掉的。
     @Published var lipSyncAutoDisabled = false
     private(set) var sourceURL: URL?
     private(set) var motionAudioURL: URL?
     @Published var lipSyncStrength: Float = 0.65
-    /// Collision spheres the cloth solver is actually testing against, for the
-    /// debug overlay.
+    /// 布料求解器实际参与测试的碰撞球，
+    /// 供调试线框用。
     var physicsColliderDebug: [MMDPhysicsColliderDebug] { springPhysics.debugColliders }
-    /// True when Bullet is driving the current model (auto or explicit).
+    /// Bullet 正在驱动当前模型（自动或显式）时为 true。
     var physicsRunsRigidBodies: Bool { springPhysics.bulletActive && physicsSettings.mode != .secondary && physicsSettings.mode != .off }
     @Published var errorMessage: String?
     /// 画布让位量：0 表示正常构图，>0 时把画面整体上移并轻微缩小，
@@ -100,10 +100,10 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     private var lastPhysicsEnabled = false
     private var lipSyncEnvelope: [Float] = []
 
-    /// Cached lookups derived from the model. They used to be rebuilt inside
-    /// `effectiveBoneAnimations` on every rendered frame: a full name→index
-    /// dictionary plus a suffix scan of all bones, at up to 120 Hz. The model
-    /// is immutable between loads, so build them once.
+    /// 从模型派生的缓存查找表。以前它们每帧都在
+    /// `effectiveBoneAnimations` 里重建：一整张名字→索引字典，
+    /// 外加一次全骨骼后缀扫描，最高 120 Hz。模型在两次加载之间
+    /// 不可变，建一次就够。
     private var boneIndexByName: [String: Int] = [:]
     private var mirroredBonePairs: [(source: Int, copy: Int)] = []
     private var mouthMorphIndices: [Int] = []
@@ -133,8 +133,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         rebuildCaches()
     }
 
-    /// Rebuilds the name tables and morph lists that the render loop reads.
-    /// Call this after the model or the morph list changes.
+    /// 重建渲染循环要读的名字表与 Morph 列表。
+    /// 模型或 Morph 列表变化后调用。
     private func rebuildCaches() {
         var byName: [String: Int] = [:]
         byName.reserveCapacity(model.bones.count)
@@ -168,13 +168,13 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         timer?.invalidate()
     }
 
-    /// Playback and every animation sampler use VMD frame numbers. Keep this
-    /// value in frames; exposing seconds here used to stop a 464-frame clip at
-    /// frame 15.47 (about half a second).
+    /// 播放与所有动画采样都用 VMD 帧号。这个值保持「帧」，
+    /// 若在这里暴露成秒，一支 464 帧的片段会停在
+    /// 第 15.47 帧（约半秒）。
     var duration: Float {
-        // A library shot can be longer than the dance, and a camera-only
-        // session has no dance at all; the timeline has to cover both or the
-        // scrubber stops at 0.1 s while the camera keeps moving for 15 s.
+        // 库里取的镜头可能比舞蹈长，纯相机会话又根本没有舞蹈；
+        // 时间轴必须同时覆盖两者，否则相机还在走 15 秒，
+        // 进度条 0.1 秒就到底了。
         let boneEnd = motion?.maxFrame ?? 0
         let cameraEnd = cameraMotion?.maxFrame ?? 0
         guard boneEnd > 0 || cameraEnd > 0 else { return 0 }
@@ -187,8 +187,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
 
     var hasMotion: Bool { motion != nil && !(motion?.isEmpty ?? true) }
 
-    /// Camera keys actually used for rendering: the library shot if one is
-    /// loaded, otherwise whatever the dance carries.
+    /// 渲染实际使用的相机关键帧：有库镜头就用它，
+    /// 否则用舞蹈自带的那份。
     var activeCameraKeys: [VMDCameraKeyframe] {
         if let cameraMotion, !cameraMotion.cameraKeys.isEmpty { return cameraMotion.cameraKeys }
         return motion?.cameraKeys ?? []
@@ -205,8 +205,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     }
 
     static func formatTime(_ seconds: Float) -> String {
-        // Clamp defensively: a malformed VMD must never turn the scrubber
-        // label into a multi-million-minute string.
+        // 防御性夹取：畸形 VMD 绝不能把进度条标签
+        // 变成几百万分钟的字符串。
         let value = max(0, min(seconds, 4 * 3600))
         let whole = Int(value.rounded(.down))
         let minutes = whole / 60
@@ -215,18 +215,18 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         return String(format: "%02d:%02d.%02d", minutes, secs, frames)
     }
 
-    // MARK: - Motion
+    // MARK: - 动作
 
-    /// Load a clip that already lives in `MMDMotionLibrary`. Nothing is copied
-    /// into the session cache, so opening five models with the same dance
-    /// leaves one file on disk instead of five.
+    /// 加载一段已经在 `MMDMotionLibrary` 里的片段。不会往会话缓存里
+    /// 复制任何东西，用同一支舞打开五个模型，磁盘上
+    /// 仍然只有一份文件。
     @discardableResult
     func loadMotion(asset: MMDMotionAsset, from library: MMDMotionLibrary) throws -> Int {
         let url = library.fileURL(for: asset)
         let loaded = try VMDParser(data: try Data(contentsOf: url)).parse()
         if asset.kind == .camera {
-            // A camera file only carries keys. Installing it as the motion
-            // would silently delete the dance that is already playing.
+            // 相机文件只带关键帧。把它当成动作装进去，
+            // 会悄悄删掉正在播放的舞蹈。
             guard !loaded.cameraKeys.isEmpty else {
                 throw MMDLoadError.invalidData("这个文件没有相机关键帧")
             }
@@ -258,8 +258,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         return mapped
     }
 
-    /// Rank library clips by how many of their tracks land on this model. Two
-    /// cuts of the same dance differ exactly here, so the score decides.
+    /// 按「有多少轨道落在这个模型上」给库片段打分。同一支舞的两个
+    /// 剪辑差别正在这里，分数说了算。
     func rankLibraryMotions(_ candidates: [MMDMotionAsset],
                             library: MMDMotionLibrary) -> [(asset: MMDMotionAsset, mapped: Int)] {
         candidates.map { asset -> (asset: MMDMotionAsset, mapped: Int) in
@@ -273,9 +273,9 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         }
     }
 
-    /// Install a generated motion directly, bypassing the VMD round-trip.
-    /// The extractor writes tracks with this model's real bone names, so this
-    /// path avoids Shift-JIS truncation and name-normalization failures.
+    /// 直接装入生成好的动作，绕过 VMD 往返。
+    /// 提取器写轨道时用的是这个模型的真实骨名，所以这条路径
+    /// 避开了 Shift-JIS 截断和名字归一化的失败。
     func loadGeneratedMotion(_ generated: VMDMotion, name: String) throws {
         guard !generated.isEmpty else {
             throw MMDLoadError.invalidData("生成的动作没有关键帧")
@@ -299,23 +299,23 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         currentFrame = 0
         springPhysics.reset()
         springPhysics.prepare(model: model)
-        // VMD camera motion is opt-in. Auto-enabling it makes a user's first
-        // camera swipe appear to do nothing, because the VMD camera wins.
-        // An explicitly chosen library shot survives a dance change.
+        // VMD 相机默认不启用。自动开启会让用户第一次划动相机
+        // 看起来毫无反应，因为 VMD 相机赢了。
+        // 明确选过的库镜头则能在换舞之后保留。
         useCameraMotion = cameraMotion == nil ? false : useCameraMotion
         boneRotations.removeAll()
         boneOffsets.removeAll()
         buildMotionMaps(newMotion)
-        // A clip that binds to nothing is indistinguishable from a broken
-        // import, so fail loudly instead of leaving a dead timeline behind.
+        // 绑不到任何东西的片段和导入失败没有区别，
+        // 所以宁可大声报错，也别留一条死掉的时间轴。
         if motionBoneTracks.isEmpty && motionMorphTracks.isEmpty && !newMotion.boneTracks.isEmpty {
             removeMotion()
             throw MMDLoadError.invalidData("《\(name)》的 \(newMotion.boneTracks.count) 根骨骼名称都和当前模型对不上，" +
                                            "无法驱动这个模型。请改用与模型同一角色的动作版本。")
         }
-        // A clip that animates the mouth already owns the lip shape. Layering
-        // the audio envelope on top doubles the deformation frame by frame and
-        // is exactly the "嘴一直在抖" report. Turn it off and say why.
+        // 自带嘴部动画的片段本来就有唇形。再叠音频包络，
+        // 会让形变逐帧翻倍，
+        // 正是「嘴一直在抖」那条反馈。关掉它并说明原因。
         let clipDrivesMouth = !mouthMorphIndices.isEmpty
             && motionMorphTracks.keys.contains { mouthMorphIndices.contains($0) }
         lipSyncAutoDisabled = clipDrivesMouth
@@ -326,8 +326,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         return motionBoneTracks.count
     }
 
-    /// Bone names suitable for generated tracks, taken from the current
-    /// humanoid binding. A generated track uses these names verbatim.
+    /// 适合生成轨道的骨名，取自当前的人形绑定。
+    /// 生成的轨道会原样使用这些名字。
     func humanoidBoneNameMap() -> [MMDHumanoidJoint: String] {
         var result: [MMDHumanoidJoint: String] = [:]
         for (joint, index) in humanoidBindings where index >= 0 && index < model.bones.count {
@@ -343,23 +343,23 @@ final class MMDModelDocument: ObservableObject, Identifiable {
 
     var physicsBodyCount: Int { springPhysics.solvedRigidBodyCount }
     var physicsJointCount: Int { springPhysics.solvedJointCount }
-    /// Every body in the PMX file, including the mode-0 colliders that never
-    /// move. Telling "0 simulated" from "0 authored" matters when a model
-    /// looks like physics does nothing.
+    /// PMX 文件里的全部刚体，包括永远不动的模式 0 碰撞体。
+    /// 区分「0 个参与模拟」和「模型本来就没有」，在
+    /// 物理看起来没反应时很关键。
     var totalRigidBodyCount: Int { springPhysics.totalRigidBodyCount }
-    /// Bones the spring chains actually drive. Zero means the physics switch
-    /// has nothing to move, which is what "physics does nothing" usually is.
+    /// 弹簧链实际驱动的骨骼。为零说明物理开关没有东西可动，
+    /// 这通常就是「物理没反应」的真相。
     var clothBoneCount: Int { springPhysics.clothBoneCount }
     var clothChainCount: Int { springPhysics.clothChainCount }
     var physicsColliderCount: Int { springPhysics.colliderCount }
-    /// "hair 6 · skirt 4" — what kinds of chains were found.
+    /// 「头发 6 · 裙摆 4」—— 找到了哪些类型的链。
     var clothChainSummary: String {
         springPhysics.chainKindSummary.map { "\($0.0) \($0.1)" }.joined(separator: " · ")
     }
-    /// First few chain roots, so a model whose ribbons are not detected can be
-    /// diagnosed from the settings page alone.
+    /// 前几条链的根骨名，这样飘带没被识别的模型，
+    /// 光看设置页就能判断。
     var clothChainSamples: String { springPhysics.chainSamples.joined(separator: "、") }
-    /// Short build stamp: "1.7 (17)".
+    /// 短构建编号：「1.7 (17)」。
     var appVersionText: String {
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
@@ -386,8 +386,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         useCameraMotion = false
     }
 
-    /// Resolve VMD track names onto bone indices for the current model.
-    /// Shared by the importer (to score candidates) and by buildMotionMaps.
+    /// 为当前模型把 VMD 轨道名解析到骨骼索引。
+    /// 导入器（给候选打分）和 buildMotionMaps 共用。
     private func mapBoneTracks(_ motion: VMDMotion) -> (tracks: [Int: VMDBoneTrack],
                                                         unmatched: [String],
                                                         ignored: Int) {
@@ -412,17 +412,17 @@ final class MMDModelDocument: ObservableObject, Identifiable {
                 boneTracks[index] = track
                 continue
             }
-            // ZZZ / custom rigs often rename the standard MMD bones to
-            // English or game-specific names. Retarget the generated tracks
-            // through a conservative alias table before giving up.
+            // ZZZ / 自定义骨架常把标准 MMD 骨名改成
+            // 英文或游戏专用名。放弃之前，先过一张保守的
+            // 别名表重定向生成的轨道。
             if let aliasIndex = Self.aliasBoneIndex(for: track.name, model: model,
                                                    normalized: boneByNormalized) {
                 boneTracks[aliasIndex] = track
                 continue
             }
-            // VMD stores only 15 Shift-JIS bytes per name. A long PMX bone
-            // name can therefore arrive truncated. Use a conservative prefix
-            // match only when the stored name is long enough to be unique.
+            // VMD 每个名字只有 15 个 Shift-JIS 字节，长 PMX 骨名
+            // 到这里可能已被截断。只有存下的名字足够长、能唯一确定时，
+            // 才做保守的前缀匹配。
             let trimmed = track.name.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.count >= 4,
                let index = model.bones.firstIndex(where: {
@@ -431,9 +431,9 @@ final class MMDModelDocument: ObservableObject, Identifiable {
                 boneTracks[index] = track
                 continue
             }
-            // Control, cloth and prop tracks intentionally have no deform
-            // target in many game rigs. They are driven by PMX physics or are
-            // pure helpers; do not flood the UI/log with them.
+            // 很多游戏骨架里，控制骨、布料骨和挂件骨本来就没有
+            // 形变目标：它们由 PMX 物理驱动，或纯粹是辅助骨，
+            // 不要拿它们刷屏界面和日志。
             let normalizedTrack = Self.normalizedBoneName(track.name)
             let ignoredMarkers = ["prop", "phone", "ctr", "skn", "fskirt", "skirt",
                                   "スカート", "hair", "髪", "sleeve", "袖", "earring",
@@ -494,9 +494,9 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         ["センター", "center", "centre", "pelvis", "hips", "hip", "root", "下半身"],
         ["上半身", "spine", "chest", "upperbody", "upper_body", "torso"],
         ["上半身2", "upperchest", "upper_chest", "chest2", "spine1"],
-        // Some motion authors target 上半身1 (the ZZZ rig name) and tell users
-        // to rename 上半身3. Bind that track to 上半身3 when the model has one,
-        // and never to 上半身2 — that one carries its own track.
+        // 有些动作作者把轨道写给 上半身1（ZZZ 骨架的叫法），然后让用户
+        // 把骨骼改名成 上半身3。模型有 上半身3 时就把那条轨道绑给它，
+        // 绝不能绑到 上半身2 —— 那根骨骼有自己的轨道。
         ["上半身1", "上半身3", "upperbody1", "upperbody3", "spine2", "spine3"],
         ["頭", "head", "neck"],
         ["左腕", "leftupperarm", "left_upper_arm", "upperarm_l", "arm_l", "l_arm", "leftarm", "lupperarm", "l_upperarm"],
@@ -524,7 +524,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
             for alias in aliases {
                 if let index = normalized[alias] { return index }
             }
-            // Some rigs prefix every bone (e.g. "mixamorig:LeftArm").
+            // 有些骨架给每根骨骼加前缀（例如 "mixamorig:LeftArm"）。
             for (name, index) in normalized {
                 if aliases.contains(where: { name.hasSuffix($0) || name.hasPrefix($0) }) {
                     return index
@@ -534,11 +534,11 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         return nil
     }
 
-    // MARK: - Humanoid rig
+    // MARK: - 人形骨架
 
-    /// Bind the standard MMD humanoid roles to this model's rig. Exact names
-    /// win; common English/Chinese aliases and hierarchy prefixes are used as
-    /// a second pass. The bindings are also used by VMD retargeting.
+    /// 把标准 MMD 人形角色绑到这个模型的骨架上。精确名字优先；
+    /// 常见的英文/中文别名和层级前缀作为第二轮。这些绑定
+    /// 也供 VMD 重定向使用。
     @discardableResult
     func autoBindHumanoid() -> Int {
         var bindings: [MMDHumanoidJoint: Int] = [:]
@@ -555,14 +555,14 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         }
 
         func excluded(_ name: String) -> Bool {
-            // MMD rigs frequently contain paired helper bones such as
-            // 左肩P / 左腕捩 / 左足先. Matching those instead of the deform
-            // bone makes the whole limb rotate around the wrong pivot.
+            // MMD 骨架经常有成对的辅助骨，比如
+            // 左肩P / 左腕捩 / 左足先。匹配到这些而不是形变骨，
+            // 整条肢体就会绕错误的支点旋转。
             let markers = ["捩", "twist", "roll", "helper", "dummy", "ダミー",
                            "先", "親", "物理", "physics", "ik", "target", "終", "end", "tip"]
             if markers.contains(where: { name.contains($0) }) { return true }
-            // A trailing "p" is the common MMD parent/helper suffix. Do not
-            // reject a legitimate exact alias such as "hip" or "spine".
+            // 结尾的 "p" 是 MMD 常见的父级/辅助后缀。但不要因此
+            // 拒绝 "hip"、"spine" 这类合法的精确别名。
             if name.hasSuffix("p"), name.count > 2 { return true }
             return false
         }
@@ -613,9 +613,9 @@ final class MMDModelDocument: ObservableObject, Identifiable {
                 let names = normalizedNames(bone)
                 guard !names.isEmpty else { continue }
                 if names.contains(where: excluded) { continue }
-                // A thigh alias such as 左足 must not steal 左足首 (the foot),
-                // and a shin must not steal the ankle. These names are
-                // common in MMD rigs where the alias is a prefix of a child.
+                // 左足 这样的别名不能抢走 左足首（脚），
+                // 小腿也不能抢脚踝。这些名字在
+                // MMD 骨架里很常见，别名正好是子骨的前缀。
                 if joint == .leftThigh || joint == .rightThigh {
                     if names.contains(where: { $0.contains("足首") || $0.contains("ankle") || $0.contains("foot") }) {
                         continue
@@ -648,7 +648,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
                 }
                 guard score > 0 else { continue }
 
-                // A fuzzy match must not silently cross the body midline.
+                // 模糊匹配绝不能悄悄跨过身体中线。
                 if side != 0 {
                     let hasLeft = names.contains { $0.contains("left") || $0.hasSuffix("l") || $0.hasPrefix("l") }
                     let hasRight = names.contains { $0.contains("right") || $0.hasSuffix("r") || $0.hasPrefix("r") }
@@ -657,7 +657,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
                 }
 
                 if !exact {
-                    // Prefer the real deform bone over a shorter helper.
+                    // 优先选真正的形变骨，而不是更短的辅助骨。
                     score -= 120
                 }
                 if let parent = bone.parentIndex >= 0 ? bone.parentIndex : nil {
@@ -665,9 +665,9 @@ final class MMDModelDocument: ObservableObject, Identifiable {
                     if expected.contains(where: { bindings[$0] == parent }) {
                         score += 420
                     }
-                    // A spine chain is usually upperBody -> upperBody2 ->
-                    // neck; a direct child of center is less likely to be a
-                    // limb deform bone but can still be valid for simple rigs.
+                    // 脊柱链通常是 upperBody -> upperBody2 ->
+                    // neck；center 的直接子骨不太可能是
+                    // 肢体形变骨，但在简单骨架上仍然有效。
                     if joint == .upperBody2,
                        let upper = bindings[.upperBody], parent == upper {
                         score += 260
@@ -706,8 +706,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
     func setHumanoidBinding(_ joint: MMDHumanoidJoint, boneIndex: Int?) {
         if let boneIndex {
             guard model.bones.indices.contains(boneIndex) else { return }
-            // A deform bone cannot drive two semantic joints at once. Preserve
-            // the user's explicit choice and clear the previous role instead.
+            // 一根形变骨不能同时驱动两个语义关节。保留
+            // 用户明确的选择，把上一个角色清掉。
             for (other, index) in humanoidBindings where index == boneIndex && other != joint {
                 humanoidBindings[other] = nil
             }
@@ -749,10 +749,10 @@ final class MMDModelDocument: ObservableObject, Identifiable {
             setPreset(.rightForearm, SIMD3<Float>(-45, 0, 0))
             setPreset(.rightHand, SIMD3<Float>(0, 0, -20))
         case .sit:
-            // Positive X on these rigs swings the thigh backward; that made
-            // the old preset fold both legs behind the body. Thigh forward
-            // (negative X) + shin back (positive X) produces a normal seated
-            // right angle with the feet below the knees.
+            // 这些骨架上 X 正方向会把大腿向后甩，老预设
+            // 因此把两条腿都折到身后。大腿向前
+            // （X 负）+ 小腿向后（X 正）才能得到
+            // 脚在膝下的正常坐姿直角。
             setPreset(.leftThigh, SIMD3<Float>(-82, 0, 0))
             setPreset(.rightThigh, SIMD3<Float>(-82, 0, 0))
             setPreset(.leftShin, SIMD3<Float>(82, 0, 0))
@@ -761,8 +761,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
             setPreset(.rightUpperArm, SIMD3<Float>(0, 0, -18))
             setPreset(.leftForearm, SIMD3<Float>(-24, 0, 0))
             setPreset(.rightForearm, SIMD3<Float>(-24, 0, 0))
-            // Lower the whole rig by roughly one thigh length; otherwise
-            // the seated pose floats at standing hip height.
+            // 把整套骨架下移约一个大腿长度；否则坐姿会
+            // 浮在站立时的胯高上。
             if let center = humanoidBoneIndex(for: .center) {
                 boneOffsets[center] = SIMD3<Float>(0, -model.bounds.height * 0.24, 0)
             }
@@ -771,8 +771,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
 
     private func setPreset(_ joint: MMDHumanoidJoint, _ degrees: SIMD3<Float>) {
         guard let index = humanoidBoneIndex(for: joint) else { return }
-        // Presets are authored targets; do not let the conservative joint
-        // clamp turn a valid knee bend into a nearly straight leg.
+        // 预设是作者写好的目标；不要让保守的关节夹取
+        // 把正常的屈膝变成几乎伸直的腿。
         boneRotations[index] = degrees
     }
 
@@ -782,8 +782,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
             .replacingOccurrences(of: "・", with: "")
             .replacingOccurrences(of: "･", with: "")
             .lowercased()
-        // Unreal / Mixamo exports wrap every bone in a rig prefix. Strip it
-        // before alias matching so "Bip001 L Thigh" resolves to "lthigh".
+        // Unreal / Mixamo 导出会给每根骨骼套一层骨架前缀。匹配别名前
+        // 先剥掉，这样 "Bip001 L Thigh" 才能解析成 "lthigh"。
         for prefix in ["bip001", "bip01", "mixamorig", "armature"] where value.hasPrefix(prefix) {
             value.removeFirst(prefix.count)
         }
@@ -791,7 +791,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         return value
     }
 
-    // MARK: - Playback
+    // MARK: - 播放
 
     func togglePlayback() {
         if isPlaying { pause() } else { play() }
@@ -855,13 +855,13 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         audioPlayer?.currentTime = min(audioPlayer?.duration ?? 0, TimeInterval(currentFrame / frameRate))
     }
 
-    /// Sub-frame playback position for the renderer.
+    /// 渲染用的亚帧播放位置。
     ///
-    /// `currentFrame` is published at 30 Hz so SwiftUI does not rebuild the
-    /// whole inspector tree on every display refresh. Rendering reads this
-    /// value instead: on a 120 Hz ProMotion canvas the old code reused the same
-    /// pose for four consecutive frames, which read as stutter even though the
-    /// frame counter said 120.
+    /// `currentFrame` 以 30 Hz 发布，免得 SwiftUI 每次屏幕刷新
+    /// 都重建整棵检查器树。渲染改为读这个值：
+    /// 在 120 Hz 的 ProMotion 画布上，旧代码连续四帧
+    /// 复用同一个姿势，帧计数器说 120，
+    /// 观感却是卡顿。
     func interpolatedFrame(now: CFTimeInterval = CACurrentMediaTime()) -> Float {
         guard isPlaying, hasMotion || hasCameraMotion else { return currentFrame }
         let elapsed = Float(max(0, now - lastTick))
@@ -874,7 +874,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         return frame
     }
 
-    // MARK: - Animation sampling
+    // MARK: - 动画采样
 
     func effectiveBoneAnimations(frame: Float) -> [Int: MMDBoneAnimation] {
         var result: [Int: MMDBoneAnimation] = [:]
@@ -895,11 +895,11 @@ final class MMDModelDocument: ObservableObject, Identifiable {
             animation.position += offset
             result[boneIndex] = animation
         }
-        // Converted models (Genshin style) often weight the legs/shoes to
-        // physics-driven deform copies such as 足D / ひざD. Without a rigid-body
-        // solve those copies stay at rest, so the foot slides out of the shoe
-        // and the ankle texture stretches. Mirror the source bone whenever the
-        // D bone has no authored track of its own.
+        // 转换模型（原神风格）常把腿和鞋的权重挂在
+        // 足D / ひざD 这类物理驱动的形变副本上。没有刚体
+        // 求解，这些副本就停在静止姿势，脚从鞋里滑出去，
+        // 脚踝贴图被拉长。只要 D 骨没有自己的轨道，
+        // 就镜像源骨骼。
         for pair in mirroredBonePairs where result[pair.copy] == nil {
             if let source = result[pair.source] {
                 result[pair.copy] = source
@@ -919,9 +919,9 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         return result
     }
 
-    /// Import a VPD static pose. Bone rotations and offsets are applied to the
-    /// same manual-pose channels used by the bone gizmo, so a pose remains
-    /// editable and can be layered under a VMD clip.
+    /// 导入 VPD 静态姿势。骨骼旋转与偏移写进骨骼手柄用的
+    /// 同一套手动姿势通道，所以姿势仍可编辑，
+    /// 也能叠在 VMD 片段下面。
     @discardableResult
     func loadPose(url: URL) throws -> Int {
         pause()
@@ -1026,10 +1026,10 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         return weights
     }
 
-    // MARK: - Scene objects and accessory binding
+    // MARK: - 场景物体与挂件绑定
 
-    /// Import an external PMX/folder/ZIP into app-owned storage so textures
-    /// remain valid after the Files security scope is released.
+    /// 把外部 PMX/目录/ZIP 导入 App 自己的存储，这样 Files 的
+    /// 安全作用域释放后贴图仍然有效。
     @discardableResult
     func importAttachment(from source: URL) throws -> UUID {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
@@ -1062,7 +1062,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         return try addAttachment(url: pmx, autoBind: true)
     }
 
-    /// Add an already persistent PMX, used by automatic package classification.
+    /// 添加一个已经持久化的 PMX，供自动分包归类使用。
     @discardableResult
     func addAttachment(url: URL, autoBind: Bool = true) throws -> UUID {
         let model = try PMXParser(data: Data(contentsOf: url)).parse()
@@ -1094,8 +1094,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         let alreadyAdded: Bool
     }
 
-    /// PMX models shipped in the same imported archive that are not yet on
-    /// the canvas. The library may intentionally show only the main model.
+    /// 同一个导入包里还有、但尚未上画布的 PMX 模型。
+    /// 模型库可能故意只展示主模型。
     func packageModelOptions() -> [MMDPackageModelOption] {
         let root = fallbackRoot ?? baseDirectory
         guard let enumerator = FileManager.default.enumerator(at: root,
@@ -1143,8 +1143,8 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
         if let boneIndex {
             guard model.bones.indices.contains(boneIndex) else { return }
-            // Props authored around the origin should start at the selected
-            // joint; assets authored in character coordinates stay untouched.
+            // 按原点写的挂件应当落在选中的关节上；
+            // 按角色坐标写的资源保持不动。
             if attachments[index].position == .zero && attachments[index].boundBoneIndex == nil {
                 attachments[index].position = model.bones[boneIndex].position
             }
@@ -1180,7 +1180,7 @@ final class MMDModelDocument: ObservableObject, Identifiable {
         objectWillChange.send()
     }
 
-    // MARK: - Editing
+    // MARK: - 编辑
 
     func setBoneRotation(index: Int, degrees: SIMD3<Float>) {
         guard index >= 0 && index < model.bones.count else { return }

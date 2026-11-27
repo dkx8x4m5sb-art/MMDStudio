@@ -25,11 +25,11 @@ enum MMDModelExporter {
 
     private static let fileManager = FileManager.default
 
-    /// Exports the current frame as a triangulated OBJ+MTL with per-vertex
-    /// skinning/morph applied, and copies the original PMX/PMD unchanged plus
-    /// all texture files in their original formats. OBJ is a universal
-    /// interchange target; it is not a PMX round-trip and does not carry MMD
-    /// bones, IK, rigid bodies or morph sliders.
+    /// 把当前帧导出为带逐顶点蒙皮/形变的三角化 OBJ+MTL，
+    /// 并把原始 PMX/PMD 原样复制，外加全部贴图
+    /// 的原始格式文件。OBJ 是通用的
+    /// 交换格式，不是 PMX 往返：它不带 MMD
+    /// 骨骼、IK、刚体或 Morph 滑杆。
     static func exportCurrentPose(document: MMDModelDocument) throws -> MMDModelExportSummary {
         let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
@@ -154,8 +154,8 @@ enum MMDModelExporter {
                                      copiedAssets: copiedAssets, copiedSourceModel: copiedSource)
     }
 
-    /// Writes the current local bone pose as VPD. VPD is the standard MMD
-    /// static-pose format; names are Shift-JIS with a UTF-8 fallback.
+    /// 把当前局部骨骼姿势写成 VPD。VPD 是 MMD 标准的
+    /// 静态姿势格式；名字用 Shift-JIS，UTF-8 兜底。
     private static func exportVPD(document: MMDModelDocument, directory: URL, safeName: String) throws {
         let animations = document.effectiveBoneAnimations(frame: document.currentFrame)
         var lines = ["Vocaloid Pose Data file", "; exported by MMD Studio",
@@ -184,10 +184,10 @@ enum MMDModelExporter {
     }
 }
 
-/// Deterministic offscreen video export. Unlike the live screen recorder this
-/// drives the document frame-by-frame at a fixed rate, so the output duration
-/// matches the VMD and every frame is an offscreen Metal render. Optional VMD
-/// audio is muxed into the final MP4.
+/// 确定性的离屏视频导出。与屏幕录制不同，
+/// 它以固定帧率逐帧驱动文档，输出时长
+/// 与 VMD 一致，每一帧都是离屏 Metal 渲染。
+/// 可选的 VMD 音频会混进最终 MP4。
 final class MMDVideoExporter: ObservableObject {
 
     @Published var isExporting = false
@@ -210,8 +210,8 @@ final class MMDVideoExporter: ObservableObject {
         return min(200, max(2, raw))
     }
 
-    /// Renders the current frame at the configured video size and writes a PNG
-    /// that keeps the alpha channel when transparent output is enabled.
+    /// 按设定好的视频尺寸渲染当前帧，写出 PNG；
+    /// 开启透明输出时保留 alpha 通道。
     func exportStill(document: MMDModelDocument, renderer: MMDRenderer,
                      width: Int, height: Int, transparentBackground: Bool) {
         guard !isExporting, !isRenderingStill else { return }
@@ -287,11 +287,11 @@ final class MMDVideoExporter: ObservableObject {
         queue.async { [weak self] in
             guard let self else { return }
             let originalFrame = document.currentFrame
-            // Never render frame 0 into a texture that still holds the last
-            // export's final frame.
+            // 绝不能把第 0 帧画进还留着上一次导出
+            // 最后一帧的纹理。
             renderer.resetCaptureTargets()
-            // The display link redraws at 120 Hz; letting it run during an
-            // export halves the GPU budget available to the encoder.
+            // display link 按 120 Hz 重绘；导出期间让它继续跑，
+            // 会吃掉编码器一半的 GPU 预算。
             renderer.setPreviewPaused(true)
             document.isExporting = true
             defer {
@@ -304,20 +304,20 @@ final class MMDVideoExporter: ObservableObject {
                                                fileType: transparentBackground ? .mov : .mp4)
                 let targetMbps = Self.resolvedBitrate(width: width, height: height, fps: fps,
                                                       quality: quality, requested: bitrateMbps)
-                // HEVC with alpha spends most of its bit budget on the colour
-                // plane and starves the alpha plane, which is what leaves the
-                // first frame's silhouette hanging over the following ones.
-                // Give transparent exports extra bitrate, keep the GOP at one
-                // second so the alpha plane is refreshed often, and turn off
-                // frame reordering so frame 0 cannot be held as a reference.
+                // 带 alpha 的 HEVC 会把大部分码率花在颜色平面上，
+                // alpha 平面因此被饿死 ——
+                // 这就是第一帧剪影一直挂在后面所有帧上的原因。
+                // 给透明导出更高的码率，GOP 压到一秒，
+                // alpha 平面才能被频繁刷新；再关掉帧重排，
+                // 第 0 帧就没法被当成参考帧扣住。
                 let bitrate = Int(targetMbps * (transparentBackground ? 1.8 : 1.0) * 1_000_000)
                 let keyframeSeconds = transparentBackground
                     ? 1
                     : max(1, min(10, keyframeInterval))
                 let settings: [String: Any]
                 if transparentBackground {
-                    // HEVC with alpha is the only Apple encoder that survives
-                    // an alpha channel through a .mov container.
+                    // 带 alpha 的 HEVC 是 Apple 唯一能把 alpha 通道
+                    // 完整塞进 .mov 容器的编码器。
                     settings = [
                         AVVideoCodecKey: AVVideoCodecType.hevcWithAlpha,
                         AVVideoWidthKey: width,
@@ -330,11 +330,11 @@ final class MMDVideoExporter: ObservableObject {
                         ]
                     ]
                 } else {
-                    // Apple's H.264 hardware encoder tops out at 4K30 (High
-                    // profile level 5.1). Requesting 2160p60 there silently
-                    // produced a 30 fps file — the "target frame rate not
-                    // reached" complaint. HEVC sustains 4K60, so pick the codec
-                    // by pixel rate instead of always asking for H.264.
+                    // Apple 的 H.264 硬件编码器上限是 4K30
+                    // （High profile level 5.1）。在那里要 2160p60 会
+                    // 悄悄产出 30 fps 的文件 —— 就是「帧率不达标」
+                    // 那条反馈。HEVC 能稳住 4K60，所以按像素率
+                    // 挑编码器，而不是一律上 H.264。
                     let needsHEVC = width * height > 1920 * 1080 || fps > 30
                     var compression: [String: Any] = [
                         AVVideoAverageBitRateKey: bitrate,
@@ -369,12 +369,12 @@ final class MMDVideoExporter: ObservableObject {
                 }
                 writer.startSession(atSourceTime: .zero)
 
-                // HEVC with alpha treats the first intra frame as the baseline
-                // for the alpha plane. If that frame already holds the
-                // character, every later frame composites over its silhouette
-                // — the "first frame stuck under the whole video" ghost that
-                // survived the readback and memset fixes. Leading with one
-                // fully transparent frame leaves the baseline empty.
+                // 带 alpha 的 HEVC 把第一个帧内帧当作 alpha 平面的
+                // 基准。这一帧里要是有角色，后面每一帧都会
+                // 合成在它的剪影上 —— 就是那条「第一帧卡在整个视频
+                // 底下」的残影，回读和 memset 都没修掉。
+                // 开头先放一帧全透明，
+                // 基准就是空的。
                 let frameOffset = transparentBackground ? 1 : 0
                 if transparentBackground,
                    let clear = Self.transparentPixelBuffer(width: width, height: height,
@@ -383,9 +383,9 @@ final class MMDVideoExporter: ObservableObject {
                 }
 
                 var zeroCopyEnabled = true
-                // Render time vs encoder back-pressure. Without this number a
-                // "only 30 fps" report cannot be attributed: it is either the
-                // GPU or the encoder, and the two need different fixes.
+                // 渲染耗时 vs 编码器背压。没有这个数字，
+                // 「只有 30 fps」就说不清是 GPU 还是编码器的问题，
+                // 两者要的修法完全不同。
                 var renderTotalMs: Double = 0
                 var waitTotalMs: Double = 0
                 for frame in 0..<frameCount {
@@ -396,9 +396,9 @@ final class MMDVideoExporter: ObservableObject {
                     var probeBytes: [UInt8]?
                     var probeRowBytes = 0
 
-                    // Fast path: the GPU draws straight into a buffer owned by
-                    // the encoder. At 4K the old path moved 66 MB per frame
-                    // through the CPU and could not hold 60 fps.
+                    // 快路径：GPU 直接画进编码器持有的缓冲。
+                    // 4K 下旧路径每帧要通过 CPU 搬 66 MB，
+                    // 根本稳不住 60 fps。
                     if zeroCopyEnabled, let pool = adaptor.pixelBufferPool {
                         var pooled: CVPixelBuffer?
                         CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pooled)
@@ -406,10 +406,10 @@ final class MMDVideoExporter: ObservableObject {
                            renderer.captureFrame(into: texture, frame: frameTime,
                                                  transparentBackground: transparentBackground) {
                             if frame == 0 {
-                                // Verify the IOSurface path actually produced
-                                // pixels; an all-clear first frame means the
-                                // texture binding silently failed and the whole
-                                // video would come out empty.
+                                // 确认 IOSurface 路径真的产出了像素；
+                                // 第一帧全空意味着纹理绑定
+                                // 悄悄失败了，整段视频
+                                // 会是空的。
                                 let coverage = Self.pixelBufferCoverage(pooled)
                                 if coverage > 0.001 || !transparentBackground {
                                     buffer = pooled
@@ -448,8 +448,8 @@ final class MMDVideoExporter: ObservableObject {
 
                     if transparentBackground, let bytes = probeBytes,
                        frame == 0 || frame == frameCount / 3 {
-                        // Only the fallback path keeps the rows on the CPU, so
-                        // probes are written from there.
+                        // 只有兜底路径把行留在 CPU 上，
+                        // 探测也就从那里写。
                         let probeURL = videoDirectory.appendingPathComponent(
                             "\(safeName)-\(stamp)-probe\(String(format: "%03d", frame)).png")
                         Self.writeFrameProbe(bytes, rowBytes: probeRowBytes,
@@ -533,14 +533,14 @@ final class MMDVideoExporter: ObservableObject {
         }
     }
 
-    /// Copies the rendered BGRA rows straight into a CVPixelBuffer.
+    /// 把渲染好的 BGRA 行直接拷进 CVPixelBuffer。
     ///
-    /// The previous implementation rebuilt a CGContext, cleared it and drew the
-    /// frame with `.copy`. That depended on Core Graphics compositing behaving
-    /// predictably against a recycled pool buffer, and it did not: the first
-    /// frame stayed underneath every later frame. A memcpy of the full buffer
-    /// cannot composite at all — whatever the pool hands back is overwritten
-    /// byte for byte, including any row padding.
+    /// 上一版重建 CGContext、清空再用 `.copy` 画进去。
+    /// 这依赖 Core Graphics 合成对回收池缓冲的行为
+    /// 可预测，而它并不可预测：第一帧就一直
+    /// 留在后面每一帧底下。整块 memcpy 根本
+    /// 不做合成 —— 池子给回什么就逐字节覆盖什么，
+    /// 包括行填充。
     private static func pixelBuffer(fromBGRA bytes: [UInt8], rowBytes: Int,
                                     width: Int, height: Int,
                                     pool: CVPixelBufferPool?) -> CVPixelBuffer? {
@@ -559,8 +559,8 @@ final class MMDVideoExporter: ObservableObject {
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
         guard let base = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
         let destinationRowBytes = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        // Clear first so the alignment padding rows hold nothing from an
-        // earlier export even if the pool sized this buffer differently.
+        // 先清空，这样对齐填充行里不会留着
+        // 上一次导出的内容，哪怕池子给这个缓冲换了尺寸。
         memset(base, 0, destinationRowBytes * height)
         bytes.withUnsafeBytes { raw in
             guard let source = raw.baseAddress else { return }
@@ -577,10 +577,10 @@ final class MMDVideoExporter: ObservableObject {
         return pixelBuffer
     }
 
-    /// Writes one raw rendered frame to PNG so a transparent export can be
-    /// diagnosed against the encoder output.
-    /// A pool-backed, fully cleared pixel buffer. Used for the transparent
-    /// lead-in frame and as a fallback when the pool is unavailable.
+    /// 把一帧原始渲染写成 PNG，方便拿透明导出
+    /// 和编码器输出对照排查。
+    /// 由池子支撑、完全清空的像素缓冲。用于透明
+    /// 导出的引导帧，也在池子不可用时兜底。
     private static func transparentPixelBuffer(width: Int, height: Int,
                                                pool: CVPixelBufferPool?) -> CVPixelBuffer? {
         var buffer: CVPixelBuffer?
@@ -606,8 +606,8 @@ final class MMDVideoExporter: ObservableObject {
         return pixelBuffer
     }
 
-    /// Fraction of sampled pixels whose alpha is above a small threshold.
-    /// Used once per export to confirm the zero-copy path drew something.
+    /// alpha 高于小阈值的采样像素占比。
+    /// 每次导出确认一次，证明零拷贝路径确实画了东西。
     private static func pixelBufferCoverage(_ buffer: CVPixelBuffer) -> Double {
         CVPixelBufferLockBaseAddress(buffer, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
@@ -650,9 +650,9 @@ final class MMDVideoExporter: ObservableObject {
         CGImageDestinationFinalize(destination)
     }
 
-    /// Samples the alpha byte of the rendered BGRA rows. Used only for the
-    /// first few frames of a transparent export so a regression shows up in the
-    /// log instead of in the delivered file.
+    /// 采样渲染后 BGRA 行的 alpha 字节。只在透明导出的
+    /// 前几帧用，回归问题因此出现在日志里，
+    /// 而不是交付出去的文件里。
     private static func alphaCoverage(_ bytes: [UInt8], rowBytes: Int) -> Double {
         guard rowBytes > 4, bytes.count > rowBytes else { return 0 }
         let rows = bytes.count / rowBytes

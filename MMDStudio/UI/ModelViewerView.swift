@@ -41,12 +41,12 @@ struct ModelScreen: View {
         }
         .navigationTitle(entry.displayName)
         .navigationBarTitleDisplayMode(.inline)
-        // This screen is presented in a full-screen cover, which has no
-        // interactive pop gesture at all. Exiting therefore has exactly one
-        // route: this button. Disabling the UINavigationController gesture from
-        // a representable did not hold — SwiftUI re-enabled it after each
-        // appearance, which is why an orbit drag from the left edge still
-        // dismissed the canvas.
+        // 这个界面以全屏 cover 呈现，本身就没有
+        // 交互式返回手势。所以退出只有一条路：
+        // 这个按钮。在 representable 里关掉
+        // UINavigationController 的手势并不管用 —— SwiftUI 每次
+        // 出现后又把它打开，这就是从左边缘绕轨道拖拽
+        // 仍会把画布关掉的原因。
         .navigationBarBackButtonHidden(true)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -62,10 +62,10 @@ struct ModelScreen: View {
             let entry = self.entry
             let store = self.store
             do {
-                // A 40k-vertex PMX plus its accessory set takes seconds to
-                // parse. Doing that on the main thread blocked the UI long
-                // enough for the watchdog to kill the app, which read as a
-                // crash on "complex" models only.
+                // 4 万顶点的 PMX 加上它的挂件，解析要好几秒。
+                // 放在主线程会把 UI 卡到看门狗杀进程，
+                // 看起来就像「复杂模型」一开
+                // 就崩。
                 let loaded = try await Task.detached(priority: .userInitiated) {
                     try store.open(entry)
                 }.value
@@ -76,8 +76,8 @@ struct ModelScreen: View {
         }
         .onDisappear {
             document?.pause()
-            // The library owns the only copy of each clip now; anything the
-            // old per-document importer staged can go when the canvas closes.
+            // 现在每个片段只有库里的那一份；旧版按文档
+            // 导入暂存的东西，画布关闭时都可以清掉。
             MMDMotionLibrary.shared.purgeSessionCache()
         }
     }
@@ -528,8 +528,8 @@ struct ModelViewerView: View {
         }
     }
 
-    /// Toast when the library picker loads a clip: the sheet dismisses before
-    /// the mapping count is known, so it reports back through NotificationCenter.
+    /// 从库选择器载入片段后的提示：面板会在映射数
+    /// 算出来之前就关掉，所以通过 NotificationCenter 回报。
     private func handleMotionLoaded(_ note: Notification) {
         if let text = note.object as? String { showToast(text) }
     }
@@ -542,9 +542,9 @@ extension Notification.Name {
     static let mmdMotionLoaded = Notification.Name("mmdMotionLoadedNotification")
 }
 
-/// Blender-like transform controls for the selected scene object. The actual
-/// RGB axes are rendered in world space by the Metal overlay; these controls
-/// choose how a one-finger drag changes the selection.
+/// 选中场景物体的类 Blender 变换控件。真正的
+/// RGB 轴由 Metal 叠加层在世界空间绘制；
+/// 这些控件决定单指拖拽如何改变选择。
 private struct CanvasTransformBar: View {
     @ObservedObject var document: MMDModelDocument
 
@@ -596,8 +596,8 @@ private struct CanvasTransformBar: View {
     }
 }
 
-/// Persistent style chips. The four game looks live on the canvas so the
-/// common render-style switch is one tap, not a nested settings menu.
+/// 常驻的风格胶囊。四种游戏观感直接放在画布上，
+/// 常用的渲染风格切换一次点击，不用进嵌套菜单。
 private struct StylePresetStrip: View {
     @Binding var selection: MMDRenderStyle
     @Binding var renderMode: MMDRenderMode
@@ -1034,7 +1034,7 @@ private struct InspectorPanel<Content: View>: View {
     }
 }
 
-// MARK: - Texture export
+// MARK: - 贴图导出
 
 private struct TextureExportView: View {
     @ObservedObject var document: MMDModelDocument

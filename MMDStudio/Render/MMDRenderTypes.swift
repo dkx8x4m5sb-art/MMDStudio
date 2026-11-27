@@ -18,38 +18,38 @@ struct MMDSceneUniforms {
     var ambientColor: SIMD4<Float> = SIMD4<Float>(0.35, 0.35, 0.4, 1)
     var cameraPosition: SIMD4<Float> = SIMD4<Float>(0, 2, 30, 1)
     var params: SIMD4<Float> = SIMD4<Float>(0, 1, 1, 0)
-    /// x: ambient strength, y: fill strength, z: rim strength, w: exposure
+    /// x: 环境强度，y: 补光强度，z: 轮廓光强度，w: 曝光
     var lightParams: SIMD4<Float> = SIMD4<Float>(0.42, 0.45, 0.35, 1.0)
-    /// x: active light count; y: ambient strength; z: exposure; w: toon step count
+    /// x: 启用光源数；y: 环境强度；z: 曝光；w: 卡通阶数
     var lightCount: SIMD4<Float> = SIMD4<Float>(0, 0.42, 1.0, 3)
-    /// x: viewport width, y: viewport height, z/w: reserved
+    /// x: 视口宽，y: 视口高，z/w: 保留
     var viewportSize: SIMD4<Float> = SIMD4<Float>(1, 1, 0, 0)
-    /// x: contrast, y: bloom, z: vignette, w: reflection strength
+    /// x: 对比度，y: 泛光，z: 暗角，w: 反射强度
     var gradeParams: SIMD4<Float> = SIMD4<Float>(1, 0, 0, 1)
-    /// x: toon terminator softness, y: shadow lift, z: rim strength, w: reserved
+    /// x: 卡通透界柔和度，y: 阴影提亮，z: 轮廓光强度，w: 保留
     var toonParams: SIMD4<Float> = SIMD4<Float>(0.16, 0.62, 0.22, 0)
-    /// rgb: shadow tint; a: tint strength
+    /// rgb: 阴影色调；a: 着色强度
     var toonShadowTint: SIMD4<Float> = SIMD4<Float>(0.58, 0.55, 0.64, 0.72)
-    /// x: wrap scattering, y: world intensity, z/w: reserved
+    /// x: 环绕散射，y: 世界光强度，z/w: 保留
     var worldParams: SIMD4<Float> = SIMD4<Float>(0.18, 0.32, 0, 0)
     var worldSkyColor: SIMD4<Float> = SIMD4<Float>(0.48, 0.62, 0.82, 1)
     var worldGroundColor: SIMD4<Float> = SIMD4<Float>(0.18, 0.14, 0.12, 1)
-    /// x: outline width in pixels, y: specular strength, z: skin scatter,
-    /// w: shadow hue shift.
+    /// x: 描边宽度（像素），y: 高光强度，z: 皮肤透光，
+    /// w: 阴影色相偏移。
     var renderParams: SIMD4<Float> = SIMD4<Float>(2.6, 0.55, 0.35, 0.35)
     var lights: (MMDLightUniform, MMDLightUniform, MMDLightUniform, MMDLightUniform,
                  MMDLightUniform, MMDLightUniform, MMDLightUniform, MMDLightUniform) = MMDLightUniform.defaultTuple
 }
 
-/// GPU-side layout. Keep this in sync with `Light` in Shaders.metal.
+/// GPU 侧布局。与 `Shaders.metal` 里的 `Light` 保持一致。
 struct MMDLightUniform {
     var positionOrDirection: SIMD4<Float> = .zero
     var color: SIMD4<Float> = SIMD4<Float>(1, 1, 1, 1)
-    /// x: type (0 sun, 1 point, 2 ambient, 3 spot), y: intensity, z: range, w: enabled
+    /// x: 类型（0 平行光，1 点光，2 环境光，3 聚光），y: 强度，z: 范围，w: 是否启用
     var params: SIMD4<Float> = .zero
-    /// xyz: normalized spot direction; sun also keeps it here for editors.
+    /// xyz: 归一化的聚光方向；平行光也把方向存在这里，方便编辑器。
     var direction: SIMD4<Float> = .zero
-    /// x: outer cosine, y: inner cosine, z/w: reserved.
+    /// x: 外锥余弦，y: 内锥余弦，z/w: 保留。
     var spotParams: SIMD4<Float> = .zero
 
     static let zero = MMDLightUniform()
@@ -68,13 +68,13 @@ struct MMDLightUniform {
          MMDLightUniform.zero, MMDLightUniform.zero)
 }
 
-/// Full-screen studio backdrop. Four float4 values keep the Metal layout
-/// trivial and independent from the mesh scene uniforms.
+/// 全屏摄影棚背景。四个 float4 让 Metal 布局
+/// 保持简单，与网格场景的 uniform 互不相干。
 struct MMDStudioBackdropUniforms {
     var topColor: SIMD4<Float> = SIMD4<Float>(0.16, 0.18, 0.23, 1)
     var bottomColor: SIMD4<Float> = SIMD4<Float>(0.035, 0.04, 0.055, 1)
     var glowColor: SIMD4<Float> = SIMD4<Float>(0.30, 0.46, 0.62, 1)
-    /// x: glow strength, y: vignette, z/w: reserved
+    /// x: 光晕强度，y: 暗角，z/w: 保留
     var params: SIMD4<Float> = SIMD4<Float>(0.55, 0.38, 0, 0)
 }
 
@@ -86,8 +86,8 @@ struct MMDMaterialUniforms {
     var textureTint: SIMD4<Float> = SIMD4<Float>(1, 1, 1, 1)
     var sphereTint: SIMD4<Float> = SIMD4<Float>(0, 0, 0, 1)
     var toonTint: SIMD4<Float> = SIMD4<Float>(1, 1, 1, 1)
-    /// x: specular strength multiplier, y: metalness, z: skin flag (1 = skin),
-    /// w: outline width multiplier.
+    /// x: 高光强度倍率，y: 金属度，z: 皮肤标记（1 = 皮肤），
+    /// w: 描边宽度倍率。
     var toonControl: SIMD4<Float> = SIMD4<Float>(1, 0, 0, 1)
     var edgeSize: Float = 1
     var alphaTest: Float = 0.03
@@ -113,7 +113,7 @@ enum MMDVideoQuality: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Bits per pixel per frame used to derive an automatic bitrate.
+    /// 每帧每像素位数，用来推算自动码率。
     var bitsPerPixel: Double {
         switch self {
         case .compact: return 0.055
@@ -181,8 +181,8 @@ enum MMDRenderStyle: String, CaseIterable, Identifiable {
         }
     }
 
-    /// Style defaults used when the user switches presets. They are starting
-    /// points only; the render editor can override every value afterwards.
+    /// 用户切换预设时的风格默认值。它们只是起点；
+    /// 之后渲染编辑器可以覆盖每一项。
     var defaultToonSoftness: Float {
         switch self {
         case .mmd: return 0.20
@@ -244,8 +244,8 @@ struct MMDOrbitCamera {
         fovDegrees = 30
     }
 
-    /// Orbit is normalized by the viewport size instead of using a fixed
-    /// radians-per-point value, so a swipe feels the same on every device.
+    /// 环绕按视口尺寸归一化，而不是固定的
+    /// 每点弧度值，划动在每台设备上手感一致。
     mutating func orbit(deltaX: Float, deltaY: Float, viewportWidth: Float, viewportHeight: Float) {
         let width = max(160, viewportWidth)
         let height = max(160, viewportHeight)
@@ -253,8 +253,8 @@ struct MMDOrbitCamera {
         pitch = max(-1.35, min(1.35, pitch + deltaY / height * 1.8))
     }
 
-    /// Pan uses the actual perspective footprint at the target depth, which
-    /// makes one finger-width of movement match one finger-width on screen.
+    /// 平移用目标深度处的真实透视足迹，
+    /// 一指宽的移动正好对应屏幕上一指宽。
     mutating func pan(deltaX: Float, deltaY: Float, viewportWidth: Float, viewportHeight: Float) {
         let width = max(160, viewportWidth)
         let height = max(160, viewportHeight)
@@ -335,13 +335,13 @@ struct MMDLightSetting: Identifiable, Equatable {
     var kind: MMDLightKind
     var color: SIMD4<Float>
     var intensity: Float
-    /// Sun direction (direction from the surface toward the light), normalized.
+    /// 太阳方向（从表面指向光源），已归一化。
     var direction: SIMD3<Float>
-    /// Point-light world position.
+    /// 点光的世界位置。
     var position: SIMD3<Float>
     var range: Float
     var enabled: Bool
-    /// Spot outer cone angle in degrees. The inner cone is 72% of this value.
+    /// 聚光外锥角，单位度。内锥是它的 72%。
     var coneAngle: Float = 35
 
     static func sun(name: String = "主太阳光") -> MMDLightSetting {
@@ -419,9 +419,9 @@ enum MMDTransformAxis: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// A weapon/prop is kept as its own PMX scene object. It is not merged into the
-/// character skeleton: a bone binding applies the character bone's delta from
-/// its rest pose, while position/rotation/scale remain editable in the canvas.
+/// 武器/挂件保留为独立的 PMX 场景物体，不并进
+/// 角色骨架：骨骼绑定施加角色骨骼相对静止姿势的增量，
+/// 位置/旋转/缩放仍可在画布上编辑。
 struct MMDAttachment: Identifiable {
     var id = UUID()
     var name: String
@@ -429,7 +429,7 @@ struct MMDAttachment: Identifiable {
     var baseDirectory: URL
     var fallbackRoot: URL?
     var position: SIMD3<Float> = .zero
-    /// Euler degrees, edited by the transform gizmo or numeric inspector.
+    /// 欧拉角，单位度，由变换手柄或数值检查器编辑。
     var rotation: SIMD3<Float> = .zero
     var scale: SIMD3<Float> = SIMD3<Float>(1, 1, 1)
     var boundBoneIndex: Int?
@@ -449,10 +449,10 @@ struct MMDAttachment: Identifiable {
 struct MMDRenderSettings {
     var showGrid: Bool = false
     var showBones: Bool = false
-    /// Debug wireframes for the physics stage: the PMX rigid bodies as the
-    /// file describes them, and the collision spheres the solver actually
-    /// uses. The two rarely match on converted models, which is why a skirt
-    /// clips through a thigh that "obviously has a collider".
+    /// 物理阶段的调试线框：PMX 刚体按文件描述绘制，
+    /// 以及求解器实际使用的碰撞球。
+    /// 转换过的模型上这两者常常对不上，这就是
+    /// 「明明有碰撞体、裙子还是穿过大腿」的原因。
     var showRigidBodies: Bool = false
     var showPhysicsColliders: Bool = false
     var showGroundShadow: Bool = true
@@ -468,61 +468,61 @@ struct MMDRenderSettings {
     var bloom: Float = 0.0
     var vignette: Float = 0.0
     var reflection: Float = 1.0
-    /// Hemispheric world illumination. Scattering wraps direct light around
-    /// the terminator; sky/ground colors provide direction-dependent ambient.
+    /// 半球世界光照。散射把直射光绕到交界之外；
+    /// 天空/地面颜色提供随方向变化的环境光。
     var worldScattering: Float = 0.18
     var worldIntensity: Float = 0.32
     var worldSkyColor: SIMD4<Float> = SIMD4<Float>(0.48, 0.62, 0.82, 1)
     var worldGroundColor: SIMD4<Float> = SIMD4<Float>(0.18, 0.14, 0.12, 1)
     var photoScale: Float = 2.0
-    /// Offscreen still output. These are independent from the on-screen
-    /// drawable, so a camera render is a real Metal render at this size.
+    /// 离屏静帧输出。与屏幕 drawable 无关，
+    /// 所以相机渲染是这个尺寸下真正的 Metal 渲染。
     var photoWidth: Int = 1440
     var photoHeight: Int = 2560
     var photoTransparentBackground: Bool = false
-    /// Offline video defaults. These are independent from the photo size.
+    /// 离线视频默认值。与图片尺寸互不影响。
     var videoWidth: Int = 1080
     var videoHeight: Int = 1920
     var videoFPS: Int = 30
     var videoTransparentBackground: Bool = false
-    /// Video quality control. `auto` picks a bitrate from resolution and frame
-    /// rate; a positive `videoBitrateMbps` overrides it. Keyframe distance is in
-    /// seconds and affects seeking plus compression efficiency.
+    /// 视频质量控制。`auto` 按分辨率与帧率挑码率；
+    /// 正的 `videoBitrateMbps` 覆盖它。关键帧间隔单位是
+    /// 秒，影响拖动定位与压缩效率。
     var videoQuality: MMDVideoQuality = .high
     var videoBitrateMbps: Double = 0
     var videoKeyframeInterval: Int = 2
-    /// Optional scene backdrop image. Stored as an absolute file path after
-    /// being copied into the app's Documents/MMDStudio/Backgrounds folder.
+    /// 可选的场景背景图。复制进 App 的 Documents/MMDStudio/Backgrounds
+    /// 目录后，以绝对路径保存。
     var backgroundImagePath: String? = nil
     var photoIncludeGrid: Bool = false
     var photoIncludeBones: Bool = false
     var lights: [MMDLightSetting] = [.sun(), .fill(), .ambient()]
     var backgroundColor: SIMD4<Float> = SIMD4<Float>(0.075, 0.085, 0.115, 1.0)
-    /// Toon shading controls. The defaults match the MMD preset.
+    /// 卡通着色控制。默认值与 MMD 预设一致。
     var toonSoftness: Float = 0.20
     var toonShadowLift: Float = 0.66
     var toonRim: Float = 0.18
     var toonShadowTint: SIMD4<Float> = SIMD4<Float>(0.60, 0.57, 0.66, 0.60)
-    /// Screen-space outline thickness in pixels. Unlike a world-space shell this
-    /// keeps the line weight identical at every camera distance.
+    /// 屏幕空间描边厚度（像素）。与外壳式描边不同，
+    /// 任何相机距离下线宽都一致。
     var outlineWidth: Float = 2.6
-    /// Ladder highlight strength for the cel shader.
+    /// 卡通着色器的阶梯高光强度。
     var specularStrength: Float = 0.55
-    /// Warm light bleeding at the terminator, used by skin and thin cloth.
+    /// 明暗交界处的暖光透光，用于皮肤与薄布。
     var skinScatter: Float = 0.35
 
-    /// SDEF spherical skinning for skirts, cuffs and chest. Off by default:
-    /// the sphere solve only matches the author's intent when the converter
-    /// wrote C/R0/R1 in model space, and several do not.
+    /// 裙子、袖口和胸口的 SDEF 球面蒙皮。默认关闭：
+    /// 只有转换器把 C/R0/R1 写在模型空间时，球面解算
+    /// 才符合作者意图，而有些转换器并没有。
     var useSDEFSkinning: Bool = false
     var toonEnabled: Bool = true
     var renderMode: MMDRenderMode = .toon
     var style: MMDRenderStyle = .mmd
     var qualityMode: MMDQualityMode = .auto
     var showPerformanceHUD: Bool = true
-    /// PMX/MMD UVs and Metal's texture origin use opposite V directions for
-    /// most exports. Keep this on by default; the toggle remains available
-    /// for the occasional model that was authored with flipped UVs.
+    /// 多数导出里，PMX/MMD 的 UV 与 Metal 的纹理原点
+    /// V 方向相反。默认开启；偶有反着写 UV 的模型，
+    /// 可以用开关关掉。
     var uvFlipV: Bool = true
 
     mutating func applyStyleDefaults(_ style: MMDRenderStyle) {

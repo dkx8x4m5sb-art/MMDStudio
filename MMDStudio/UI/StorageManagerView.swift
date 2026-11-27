@@ -7,9 +7,9 @@
 
 import SwiftUI
 
-/// Storage overview + file manager. Two entry points matter here: a one-tap
-/// cache purge, and the ability to see and delete individual exported files or
-/// whole model packages without going through the model library.
+/// 存储概览 + 文件管理。这里有两个关键入口：
+/// 一键清缓存，以及不经模型库就能看到并删除
+/// 单个导出文件或整个模型包。
 struct StorageManagerView: View {
     @EnvironmentObject private var store: MMDStore
     @Environment(\.dismiss) private var dismiss
@@ -94,7 +94,7 @@ struct StorageManagerView: View {
         }
     }
 
-    // MARK: Summary
+    // MARK: 概览
 
     private var segments: [UsageSegment] {
         [UsageSegment(id: "models", label: "模型", value: monitor.modelBytes, color: .cyan),
@@ -195,7 +195,7 @@ struct StorageManagerView: View {
         }
     }
 
-    // MARK: Bucket sections
+    // MARK: 分类区块
 
     @ViewBuilder
     private func bucketSection(_ group: MMDStorageGroup) -> some View {
@@ -256,7 +256,7 @@ struct StorageManagerView: View {
         .padding(.vertical, 2)
     }
 
-    // MARK: Packages
+    // MARK: 包
 
     private var packageSection: some View {
         Section {
@@ -344,7 +344,7 @@ struct StorageManagerView: View {
         }
     }
 
-    // MARK: Actions
+    // MARK: 操作
 
     private func open(_ package: MMDStoragePackage) {
         activePackage = package
@@ -399,11 +399,11 @@ private struct UsageSegment: Identifiable {
     let color: Color
 }
 
-// MARK: - File list
+// MARK: - 文件列表
 
-/// Lists the real files under one or more folders. Deletion always goes
-/// through the same guard as the overview so a stale path can never remove
-/// something outside the app sandbox.
+/// 列出一个或多个目录下的真实文件。删除永远走
+/// 和概览同一道保护，过期路径不可能删掉
+/// App 沙箱之外的东西。
 struct StorageFilesView: View {
     let title: String
     let note: String
@@ -485,10 +485,10 @@ struct StorageFilesView: View {
                     }
                 }
             }
-            // Native bottom bar. The previous custom HStack floated above the
-            // list with its own material, which read as an old-style control
-            // bar next to the rest of the app — and it duplicated the delete
-            // button that also sat in the navigation bar.
+            // 原生底栏。上一版自定义 HStack 带着自己的材质
+            // 浮在列表上方，和 App 其他部分放在一起
+            // 像一根老式控制条 —— 而且它和导航栏里
+            // 那个删除按钮还是重复的。
             ToolbarItemGroup(placement: .bottomBar) {
                 if isSelecting {
                     Button("全选") { selected = Set(files.map(\.id)) }
@@ -600,7 +600,7 @@ struct StorageFilesView: View {
     }
 }
 
-// MARK: - Helpers
+// MARK: - 辅助
 
 private func storageBytes(_ value: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: max(0, value), countStyle: .file)

@@ -8,9 +8,9 @@
 import Foundation
 import os.log
 
-/// Lightweight, persistent in-app logger. Importing a model can fail for very
-/// different reasons on device, so the app keeps a rotating text log that the
-/// user can inspect or share directly from the UI.
+/// 轻量的持久化应用内日志。模型导入在设备上失败的原因
+/// 千差万别，App 保留一份轮转文本日志，
+/// 用户可以直接在界面上查看或分享。
 final class MMDLog {
 
     static let shared = MMDLog()
@@ -120,7 +120,7 @@ final class MMDLog {
         }
     }
 
-    /// Bytes currently occupied by the active and previous log files.
+    /// 当前与上一份日志文件现在占用的字节数。
     func storedBytes() -> Int {
         queue.sync {
             var total = 0

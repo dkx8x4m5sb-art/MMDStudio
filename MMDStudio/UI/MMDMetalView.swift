@@ -53,9 +53,9 @@ struct MMDMetalView: UIViewRepresentable {
             renderer?.resetCamera()
         }
         context.coordinator.observe(.mmdCapturePhoto) { [weak renderer] note in
-            // The renderer closes its render encoder before the readback blit;
-            // a higher scale temporarily raises the drawable so the saved
-            // image is a rendered still, not an on-screen UI screenshot.
+            // 渲染器在回读 blit 之前会先关闭渲染编码器；
+            // 更高的倍率临时放大 drawable，保存下来的是
+            // 渲染静帧，而不是屏幕 UI 截图。
             guard let renderer else {
                 NotificationCenter.default.post(name: .mmdPhotoCaptured, object: false)
                 return
@@ -138,7 +138,7 @@ struct MMDMetalView: UIViewRepresentable {
     }
 }
 
-/// A UIKit container that hosts an MTKView and owns the camera gestures.
+/// 承载 MTKView 并管理相机手势的 UIKit 容器。
 final class MMDGestureView: UIView, UIGestureRecognizerDelegate {
 
     let renderView: MTKView
@@ -147,8 +147,8 @@ final class MMDGestureView: UIView, UIGestureRecognizerDelegate {
     var onZoom: ((Float) -> Void)?
     var onReset: (() -> Void)?
 
-    /// A value of 1.0 renders at native resolution. The renderer lowers this
-    /// when the GPU budget is exceeded, without changing the UI layout.
+    /// 1.0 按原生分辨率渲染。GPU 预算超了时
+    /// 渲染器会降低它，但不改 UI 布局。
     var renderScale: CGFloat = 1.0 {
         didSet {
             guard abs(oldValue - renderScale) > 0.001 else { return }
@@ -217,7 +217,7 @@ final class MMDGestureView: UIView, UIGestureRecognizerDelegate {
     @objc private func handleOrbit(_ gesture: UIPanGestureRecognizer) {
         let translation = gesture.translation(in: self)
         gesture.setTranslation(.zero, in: self)
-        // The renderer converts points to radians using the viewport size.
+        // 渲染器按视口尺寸把点换算成弧度。
         onOrbit?(Float(translation.x), Float(translation.y))
     }
 

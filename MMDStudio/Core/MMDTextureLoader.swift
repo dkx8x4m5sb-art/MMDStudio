@@ -10,7 +10,7 @@ import Metal
 import CoreGraphics
 import ImageIO
 
-/// Loads MMD textures (PNG/JPG/BMP/TGA) and keeps them in a cache.
+/// 加载 MMD 贴图（PNG/JPG/BMP/TGA）并缓存。
 final class MMDTextureLibrary {
 
     private let device: MTLDevice
@@ -50,9 +50,9 @@ final class MMDTextureLibrary {
             recordMissing(normalized, baseDirectory: baseDirectory, fallbackRoot: fallbackRoot)
             return whiteTexture
         }
-        // Cache by the actual file, not by the PMX-relative string. Two models
-        // in one archive may reference the same relative name but resolve to
-        // different files.
+        // 按实际文件缓存，而不是按 PMX 里的相对字符串。
+        // 同一个包里的两个模型可能引用同一个相对名，
+        // 却解析到不同文件。
         let key = url.standardizedFileURL.path.lowercased()
         if let cached = cache[key] { return cached }
         guard let pixels = MMDTextureLibrary.decodeImageFile(url: url) else {
@@ -69,8 +69,8 @@ final class MMDTextureLibrary {
         return texture
     }
 
-    /// Loads a standalone image file (for example the scene backdrop) with
-    /// the same decode and upload path used by model textures.
+    /// 加载独立的图片文件（例如场景背景），
+    /// 走与模型贴图相同的解码与上传路径。
     func loadFileTexture(url: URL) -> MTLTexture? {
         let key = url.standardizedFileURL.path.lowercased()
         if let cached = cache[key] { return cached }
@@ -100,7 +100,7 @@ final class MMDTextureLibrary {
         return whiteTexture
     }
 
-    // MARK: - Path resolution
+    // MARK: - 路径解析
 
     private var directoryIndexCache: [String: [String: URL]] = [:]
 
@@ -126,9 +126,9 @@ final class MMDTextureLibrary {
         for root in roots {
             if let url = resolve(path: normalized, in: root) { return url }
         }
-        // Exporters often place the PMX in a subfolder such as
-        // "Model/Model.pmx" while the Texture folder sits one level above.
-        // Search the immediate parent and grandparent as a rescue.
+        // 导出器常把 PMX 放在 "Model/Model.pmx" 这样的子目录，
+        // 而 Texture 目录在上一级。
+        // 依次搜直接父级和祖父级作为补救。
         if let baseDirectory {
             var parent = baseDirectory.deletingLastPathComponent()
             for _ in 0..<2 {
@@ -171,7 +171,7 @@ final class MMDTextureLibrary {
             if let exact = index[variant] { return exact }
         }
 
-        // Match by suffix only when the result is unambiguous.
+        // 只有当结果唯一时才按后缀匹配。
         for variant in variants {
             let suffixMatches = index.compactMap { key, url -> (Int, URL)? in
                 guard key.hasSuffix("/" + variant) || key.hasSuffix(variant) else { return nil }
@@ -180,9 +180,9 @@ final class MMDTextureLibrary {
             if suffixMatches.count == 1 { return suffixMatches[0].1 }
         }
 
-        // Some exporters reference texture.png while the archive contains
-        // texture.jpg / texture.dds. Match the filename stem across common
-        // image extensions as a final rescue.
+        // 有些导出器引用 texture.png，包里却只有
+        // texture.jpg / texture.dds。最后一步再按
+        // 常见图片扩展名匹配文件名主干。
         let stem = (relative as NSString).deletingPathExtension
         for variant in pathVariants(stem) {
             let stemMatches = index.compactMap { key, url -> (Int, URL)? in
@@ -199,9 +199,9 @@ final class MMDTextureLibrary {
         }
         if basenameMatches.count == 1 { return basenameMatches[0].value }
 
-        // Do not guess by a "close enough" name. A wrong texture is worse
-        // than a visible missing-texture warning, and guessing was the cause
-        // of sibling models sharing each other's images.
+        // 不要靠「差不多」的名字去猜。贴错贴图比
+        // 明确提示缺贴图更糟，之前的乱猜
+        // 正是同级模型互相串图的来源。
         return nil
     }
 
@@ -238,9 +238,9 @@ final class MMDTextureLibrary {
                 }
             }
         }
-        // Only keep aliases that point at exactly one file. Code-page repairs
-        // can map two different files onto one spelling; guessing between them
-        // is the cross-model texture mix-up we must avoid.
+        // 只保留唯一指向一个文件的别名。代码页修复
+        // 可能把两个不同文件映到同一拼写；
+        // 在它们之间猜，就是我们必须避免的跨模型串图。
         var index = [String: URL]()
         for (alias, urls) in aliasMap where urls.count == 1 {
             if let url = urls.first { index[alias] = url }
@@ -250,7 +250,7 @@ final class MMDTextureLibrary {
     }
 
 
-    // MARK: - Texture creation
+    // MARK: - 贴图创建
 
     private func makeTexture(_ data: [UInt8], width: Int, height: Int) -> MTLTexture? {
         guard width > 0, height > 0, width <= 16384, height <= 16384 else { return nil }
@@ -304,7 +304,7 @@ final class MMDTextureLibrary {
     }
 
     static func makeToonRamps(device: MTLDevice) -> [MTLTexture] {
-        // Ten small procedural ramps approximating MMD's built-in toon textures.
+        // 十张小型程序化 ramp，近似 MMD 内置的 toon 贴图。
         let exponents: [Float] = [1.0, 1.6, 2.2, 3.0, 4.2, 0.7, 2.6, 3.6, 5.0, 1.2]
         let width = 256
         var textures = [MTLTexture]()
@@ -339,7 +339,7 @@ final class MMDTextureLibrary {
         return textures
     }
 
-    // MARK: - Image decoding
+    // MARK: - 图片解码
 
     struct DecodedImage {
         var data: [UInt8]
@@ -366,19 +366,19 @@ final class MMDTextureLibrary {
         return nil
     }
 
-    /// Longest edge allowed for an uploaded texture. A 4K RGBA sheet costs
-    /// 64 MB the moment it is decoded, plus a third again for mipmaps, and a
-    /// character package routinely ships a dozen of them — that is what pushed
-    /// heavy models into a jetsam kill on first draw. MMD artwork is painted
-    /// for 1024, so 2048 keeps the visual result identical at a quarter of the
-    /// memory.
+    /// 上传贴图允许的最长边。一张 4K RGBA 图
+    /// 一解码就是 64 MB，再加三分之一的 mipmap，
+    /// 一个角色包动辄十几张 —— 重型模型
+    /// 首次绘制就被 jetsam 杀掉，正是这个原因。
+    /// MMD 的图本来就是按 1024 画的，
+    /// 2048 下画质一致，内存只剩四分之一。
     static let maximumTextureEdge = 2048
 
     static func decodeWithImageIO(_ data: Data) -> DecodedImage? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-        // Decoding straight to full size allocates the whole bitmap before we
-        // ever get a chance to shrink it; asking ImageIO for a capped thumbnail
-        // keeps the peak allocation bounded.
+        // 直接解到原尺寸，会在我们有机会缩小之前
+        // 就分配好整张位图；向 ImageIO 要一个带
+        // 上限的缩略图，峰值分配才有界。
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
@@ -411,7 +411,7 @@ final class MMDTextureLibrary {
         }
         guard success else { return nil }
 
-        // CGContext produced premultiplied alpha; undo it for correct blending in Metal.
+        // CGContext 产出的是预乘 alpha；在 Metal 里正确混合要先还原。
         for index in stride(from: 0, to: pixels.count, by: 4) {
             let alpha = pixels[index + 3]
             if alpha > 0 && alpha < 255 {
@@ -554,7 +554,7 @@ final class MMDTextureLibrary {
     }
 }
 
-// MARK: - Original texture export
+// MARK: - 原始贴图导出
 
 struct MMDTextureExportItem: Identifiable {
     let id: Int
@@ -598,8 +598,8 @@ enum MMDTextureExporter {
         }
     }
 
-    /// Copies the original files without transcoding or recompression. The
-    /// export folder is visible in Files because UIFileSharingEnabled is on.
+    /// 原样复制文件，不转码、不重压。因为开了
+    /// UIFileSharingEnabled，导出目录在 Files 里可见。
     static func export(model: PMXModel,
                        baseDirectory: URL?,
                        fallbackRoot: URL?,
@@ -658,9 +658,9 @@ enum MMDTextureExporter {
                                        missing: missing, manifestURL: manifestURL)
     }
 
-    // A deliberately tolerant resolver for export. Decoding already has its
-    // own cache-backed resolver; export must still list files that the GPU
-    // decoder does not support (for example a DDS variant).
+    // 导出用的刻意宽松解析器。解码那边已有
+    // 自己的带缓存解析器；导出仍要列出 GPU
+    // 解码器不支持的格式（例如某种 DDS 变体）。
     private static func resolve(path: String,
                                 baseDirectory: URL?,
                                 fallbackRoot: URL?) -> URL? {

@@ -8,7 +8,7 @@
 import Foundation
 import simd
 
-/// Low level reader for the little-endian PMX binary format.
+/// 小端 PMX 二进制格式的底层读取器。
 struct PMXByteReader {
     let bytes: [UInt8]
     var offset: Int = 0
@@ -135,9 +135,9 @@ final class PMXParser {
         self.reader = PMXByteReader(data: data)
     }
 
-    /// Reads only the header/model-name fields. Used by the library list so a
-    /// PMX whose file name was mojibaked by an old ZIP decoder still displays
-    /// the correct model name written inside the PMX.
+    /// 只读文件头/模型名字段。模型库列表用它，
+    /// 这样文件名被旧 ZIP 解码器搞成乱码的 PMX，
+    /// 仍能显示写在 PMX 里的正确模型名。
     static func readDisplayName(data: Data) -> String? {
         var reader = PMXByteReader(data: data)
         do {
@@ -175,10 +175,10 @@ final class PMXParser {
         do {
             morphs = try parseMorphs(vertexCount: vertices.count, boneCount: bones.count, materialCount: materials.count)
         } catch {
-            // PMX 2.1 Flip/Impulse morphs (type 9/10) are not implemented. They
-            // used to abort the whole load, so a model that used them could not
-            // be opened at all. Keep the mesh, materials and bones instead; the
-            // byte offset is now unknown, so the optional sections are skipped.
+            // PMX 2.1 的 Flip/Impulse Morph（类型 9/10）没有实现。
+            // 以前它们会让整个加载中止，用了这两种 Morph 的模型
+            // 根本打不开。改为保住网格、材质和骨骼；
+            // 此后的字节偏移已不可知，可选段因此跳过。
             morphSectionFailed = true
             morphs = []
             warnings.append("变形（Morph）段解析失败，已跳过表情；模型其余部分仍可正常显示：\(error.localizedDescription)")
@@ -187,8 +187,8 @@ final class PMXParser {
         var joints: [PMXJoint] = []
         let optionalSectionStart = reader.offset
         if morphSectionFailed {
-            // The byte offset is no longer trustworthy, so nothing after the
-            // morph section can be parsed safely.
+            // 字节偏移已经不可信，Morph 段之后的
+            // 内容都不能安全解析。
             rigidBodies = []
             joints = []
         } else {
@@ -197,9 +197,9 @@ final class PMXParser {
                 rigidBodies = try parseRigidBodies(boneCount: bones.count)
                 joints = try parseJoints(rigidBodyCount: rigidBodies.count)
             } catch {
-                // Display frames / rigid bodies / joints are optional for rendering.
-                // A model must still open when a vendor writes a non-standard
-                // optional section; keep the core mesh, bones and morphs.
+                // 显示枠 / 刚体 / 关节对渲染是可选的。
+                // 厂商写了非标准可选段时，模型仍必须能打开：
+                // 保住核心网格、骨骼和 Morph。
                 reader.offset = optionalSectionStart
                 rigidBodies = []
                 joints = []
@@ -234,7 +234,7 @@ final class PMXParser {
         )
     }
 
-    // Header strings are captured while parsing the header; keep them here.
+    // 文件头字符串在解析头部时已捕获；存在这里。
     private var modelName = ""
     private var modelNameEn = ""
     private var modelComment = ""
@@ -307,7 +307,7 @@ final class PMXParser {
             var position = try reader.readVector3("顶点坐标")
             var normal = try reader.readVector3("顶点法线")
             let uv = try reader.readVector2("顶点 UV")
-            // PMX uses a left-handed coordinate system; mirror Z into our right-handed renderer.
+            // PMX 用左手坐标系；把 Z 镜像进我们的右手渲染器。
             position.z = -position.z
             normal.z = -normal.z
 
@@ -352,8 +352,8 @@ final class PMXParser {
                 var center = try reader.readVector3("SDEF C")
                 var radius0 = try reader.readVector3("SDEF R0")
                 var radius1 = try reader.readVector3("SDEF R1")
-                // SDEF data lives in the same left-handed model space as the
-                // vertices, so it needs the identical Z mirror.
+                // SDEF 数据和顶点同在左手模型空间，
+                // 所以要做同样的 Z 镜像。
                 center.z = -center.z
                 radius0.z = -radius0.z
                 radius1.z = -radius1.z
@@ -516,9 +516,9 @@ final class PMXParser {
             }
 
             if flags & 0x2000 != 0 {
-                // PMX 2.1 "external parent": the key is a bone index, so it must
-                // follow boneIndexSize like every other index field. Reading a
-                // fixed 4 bytes desynchronised every following bone.
+                // PMX 2.1 的「外部父级」：键是骨骼索引，
+                // 必须像其他索引字段一样遵循 boneIndexSize。
+                // 固定读 4 字节会让后面每根骨骼全部错位。
                 _ = try reader.readIndex(size: boneIndexSize, signed: true, "外部父变形键")
             }
 
@@ -541,11 +541,11 @@ final class PMXParser {
                     if limitEnabled {
                         lower = try reader.readVector3("IK 角度下限")
                         upper = try reader.readVector3("IK 角度上限")
-                        // The whole model is mirrored on Z, and a mirror turns a
-                        // rotation about X/Y into its negative. Limits were kept
-                        // in the original handedness, so a knee authored as
-                        // "bend backwards only" ended up clamping the solver to
-                        // the opposite direction and the leg folded forwards.
+                        // 整个模型在 Z 上镜像，而镜像会把绕 X/Y 的
+                        // 旋转变成其相反数。限位是按原始手性存的，
+                        // 于是一个写成「只能向后弯」的膝盖，
+                        // 反而把求解器夹到相反方向，
+                        // 腿就往前折了。
                         let lowX = min(-lower.x, -upper.x)
                         let highX = max(-lower.x, -upper.x)
                         let lowY = min(-lower.y, -upper.y)
@@ -554,9 +554,9 @@ final class PMXParser {
                         let highZ = max(lower.z, upper.z)
                         lower = SIMD3<Float>(lowX, lowY, lowZ)
                         upper = SIMD3<Float>(highX, highY, highZ)
-                        // A limit of exactly zero locks the bone completely.
-                        // Some converters write the flag with an empty range,
-                        // which used to freeze the whole leg chain.
+                        // 限位恰好为零表示完全锁死。
+                        // 有些转换器写了标志却给了空范围，
+                        // 以前会把整条腿链冻住。
                         if simd_length(upper - lower) < 0.0005 { limitEnabled = false }
                     }
                     links.append(PMXIKLink(boneIndex: linkIndex, hasLimit: limitEnabled,
@@ -736,10 +736,10 @@ final class PMXParser {
             var limitLowerAngle = try reader.readVector3("关节旋转下限")
             var limitUpperAngle = try reader.readVector3("关节旋转上限")
 
-            // Same handedness fix as the joint frame above: a z mirror flips
-            // the translation bound on z and reverses the sign of the x/y
-            // swing bounds, so lower and upper have to swap on those axes or
-            // the constraint ends up inverted and locks the joint.
+            // 与上面关节框架同样的手性修正：Z 镜像会翻转
+            // z 上的平移边界，并反转 x/y 摆动边界的符号，
+            // 所以这些轴上的上下限必须互换，
+            // 否则约束方向反了，关节直接锁死。
             let lowerZ = -limitUpper.z
             let upperZ = -limitLower.z
             limitLower.z = lowerZ
@@ -870,12 +870,12 @@ final class PMXParser {
             }
         }
 
-        // Vertex indices were the only parsed index field left unchecked. The
-        // mesh builder dereferences them directly (model.vertices[i]) and one
-        // out-of-range value killed the whole app with EXC_BAD_ACCESS — which
-        // is why only complex, converted models died on open while simple props
-        // loaded fine. Drop the offending triangles and re-derive the material
-        // ranges so the surviving faces stay contiguous.
+        // 顶点索引是最后一处没做校验的解析索引字段。
+        // 网格构建器直接解引用它（model.vertices[i]），
+        // 一个越界值就让整个 App 以 EXC_BAD_ACCESS 崩掉 ——
+        // 这也是为什么只有复杂的转换模型一打开就死，
+        // 简单道具却没事。丢掉越界的三角形，
+        // 重新推导材质范围，剩下的面保持连续。
         let droppedTriangles = MMDIndexSanitary.pruneOutOfRange(indices: &indices,
                                                                vertexCount: vertices.count,
                                                                materials: &materials)
